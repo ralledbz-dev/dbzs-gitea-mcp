@@ -1,0 +1,38 @@
+{
+  "name": "DBZS Gitea MCP Server Asset Pack",
+  "version": "1.0.0",
+  "generated": "2026-08-18",
+  "source": "DBZS Gitea MCP branding sheet",
+  "app_icon_sizes": [
+    16,
+    24,
+    32,
+    48,
+    64,
+    128,
+    256,
+    512,
+    1024
+  ],
+  "tray_icon_sizes": [
+    16,
+    20,
+    24,
+    32,
+    48,
+    64,
+    128,
+    256
+  ],
+  "formats": [
+    "PNG",
+    "ICO"
+  ],
+  "recommended_files": {
+    "windows_app": "app/windows/dbzs-gitea-mcp.ico",
+    "windows_tray": "tray/windows/dbzs-gitea-mcp-tray.ico",
+    "installer": "installer/dbzs-gitea-mcp-installer.ico",
+    "web_favicon": "favicon/favicon.ico",
+    "high_res_png": "app/png/dbzs-gitea-mcp-1024.png"
+  }
+}
