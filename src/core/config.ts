@@ -28,6 +28,18 @@ export interface ServerConfiguration {
   readonly transport: McpTransportMode;
   /** TCP-Port des ausschließlich an 127.0.0.1 gebundenen HTTP-Transports. */
   readonly httpPort: number;
+  /** Optionales HMAC-Secret für den ausschließlich lokalen Gitea-Webhook-Receiver. */
+  readonly webhookSecret?: string;
+  /** Optionaler exakt lokaler Zielendpunkt für die Gitea-Hook-Registrierung. */
+  readonly webhookTargetUrl?: string;
+  /** Optionale lokale Fleet-Commander-v1-API-Basisadresse. */
+  readonly fleetApiUrl?: string;
+  /** Optionaler absoluter Pfad zur atomaren Feature-Starter-Health-Datei. */
+  readonly featureStarterHealthPath?: string;
+  /** Optionaler kanonischer Pfad zur DBZS.FeatureStarter.exe für bestehende CLI-Hooks. */
+  readonly featureStarterExecutable?: string;
+  /** Getrennte lokale Freigabe für mutierende Feature-Starter-Update- und Installer-Hooks. */
+  readonly featureStarterAllowHooks: boolean;
 }
 
 /**
@@ -110,6 +122,88 @@ function parseTransportMode(environment: NodeJS.ProcessEnv): McpTransportMode {
 }
 
 /**
+ * Prüft die optionale Zieladresse für eine Gitea-Hook-Registrierung auf strikten Local-first-Betrieb.
+ *
+ * Was: Akzeptiert ausschließlich HTTP-Adressen an 127.0.0.1, ::1 oder localhost mit exakt `/webhooks/gitea`.
+ * Warum: Ein konfigurierter Gitea-Hook darf nie als allgemeiner ausgehender HTTP-Kanal missbraucht werden.
+ * Wofür: Für die Phase-3-Webhook-Registrierung über LocalWebhookService.
+ * Woher: Aus GITEA_WEBHOOK_TARGET_URL.
+ * Wo: Bei Runtime-Konfigurationsvalidierung.
+ * Soll-Ergebnis: Sicherer lokaler Receiver-Endpunkt oder ein sichtbarer Konfigurationsfehler.
+ *
+ * @param environment Laufzeitumgebung für testbare Konfigurationsauflösung.
+ * @returns Normalisierte lokale Ziel-URL oder `undefined`.
+ * @throws {DbzsError} Bei externer, ungültiger oder falsch gerouteter Zieladresse.
+ */
+function parseOptionalLocalWebhookTargetUrl(environment: NodeJS.ProcessEnv): string | undefined {
+  const value = environment.GITEA_WEBHOOK_TARGET_URL?.trim();
+  if (!value) {
+    return undefined;
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new DbzsError("CONFIGURATION_ERROR", "GITEA_WEBHOOK_TARGET_URL muss eine absolute lokale HTTP-URL sein.");
+  }
+  if (
+    url.protocol !== "http:" ||
+    !["127.0.0.1", "::1", "localhost"].includes(url.hostname.toLowerCase()) ||
+    url.pathname !== "/webhooks/gitea" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new DbzsError(
+      "CONFIGURATION_ERROR",
+      "GITEA_WEBHOOK_TARGET_URL muss ausschließlich auf http://127.0.0.1:<port>/webhooks/gitea zeigen.",
+    );
+  }
+  return url.toString();
+}
+
+/**
+ * Liest einen strikt booleschen lokalen Freigabeschalter.
+ *
+ * Was: Akzeptiert nur den Stringwert `true` für eine aktive Freigabe und sonst false.
+ * Warum: Mutierende Update- und Installer-Hooks müssen zusätzlich zur MCP-Bestätigung lokal aktiviert werden.
+ * Wofür: Für DBZS_FEATURE_STARTER_ALLOW_HOOKS.
+ * Woher: Aus dem gestarteten Prozess.
+ * Wo: Bei der Runtime-Konfigurationsauflösung.
+ * Soll-Ergebnis: Fail-closed bei jeder nicht exakten Aktivierung.
+ *
+ * @param environment Laufzeitumgebung für testbare Konfigurationsauflösung.
+ * @returns Ob die mutierenden lokalen Hooks aktiviert sind.
+ */
+function parseExplicitBoolean(environment: NodeJS.ProcessEnv, key: string): boolean {
+  return environment[key]?.trim().toLowerCase() === "true";
+}
+
+/**
+ * Liest ein optionales HMAC-Secret für den ausschließlich lokalen Gitea-Webhook-Receiver.
+ *
+ * Was: Akzeptiert einen nicht leeren Secretwert erst ab 32 Zeichen und lässt den Receiver sonst deaktiviert.
+ * Warum: Ohne geheimen HMAC-Schlüssel darf kein eingehender Webhook-Endpunkt verarbeitet werden.
+ * Wofür: Für den opt-in Phase-3-Webhook-Receiver unter `/webhooks/gitea`.
+ * Woher: Aus GITEA_WEBHOOK_SECRET des gestarteten Prozesses.
+ * Wo: Bei Konfigurationsvalidierung vor dem Aufbau der HTTP-Runtime.
+ * Soll-Ergebnis: Ein ausreichend langes, nie geloggtes Secret oder ein sicher deaktivierter Receiver.
+ *
+ * @param environment Laufzeitumgebung für testbare Konfigurationsauflösung.
+ * @returns Getrimmtes Webhook-Secret oder `undefined`.
+ * @throws {DbzsError} Wenn ein gesetztes Secret zu kurz ist.
+ */
+function parseOptionalWebhookSecret(environment: NodeJS.ProcessEnv): string | undefined {
+  const secret = environment.GITEA_WEBHOOK_SECRET?.trim();
+  if (!secret) {
+    return undefined;
+  }
+  if (secret.length < 32) {
+    throw new DbzsError("CONFIGURATION_ERROR", "GITEA_WEBHOOK_SECRET muss mindestens 32 Zeichen lang sein.");
+  }
+  return secret;
+}
+
+/**
  * Liest den Port für den ausschließlich lokalen HTTP-Transport.
  *
  * Was: Akzeptiert einen ganzzahligen TCP-Port aus MCP_HTTP_PORT oder nutzt 3939 als Standard.
@@ -165,13 +259,40 @@ export function loadServerConfiguration(environment: NodeJS.ProcessEnv = process
 
   const giteaBaseUrl = normalizeGiteaBaseUrl(requireEnvironmentValue(environment, "GITEA_BASE_URL"));
   const allowedOwner = requireEnvironmentValue(environment, "GITEA_ALLOWED_OWNER");
+  const transport = parseTransportMode(environment);
+  const webhookSecret = parseOptionalWebhookSecret(environment);
+  const webhookTargetUrl = parseOptionalLocalWebhookTargetUrl(environment);
+  const featureStarterExecutable = environment.DBZS_FEATURE_STARTER_EXECUTABLE?.trim() || undefined;
+  const featureStarterAllowHooks = parseExplicitBoolean(environment, "DBZS_FEATURE_STARTER_ALLOW_HOOKS");
+
+  if (Boolean(webhookSecret) !== Boolean(webhookTargetUrl)) {
+    throw new DbzsError(
+      "CONFIGURATION_ERROR",
+      "GITEA_WEBHOOK_SECRET und GITEA_WEBHOOK_TARGET_URL müssen gemeinsam gesetzt sein, um lokale Gitea-Webhooks zu aktivieren.",
+    );
+  }
+  if (webhookTargetUrl && transport !== "http") {
+    throw new DbzsError("CONFIGURATION_ERROR", "Lokale Gitea-Webhooks erfordern MCP_TRANSPORT=http.");
+  }
+  if (featureStarterAllowHooks && !featureStarterExecutable) {
+    throw new DbzsError(
+      "CONFIGURATION_ERROR",
+      "DBZS_FEATURE_STARTER_ALLOW_HOOKS=true erfordert DBZS_FEATURE_STARTER_EXECUTABLE.",
+    );
+  }
 
   return {
     giteaBaseUrl,
     giteaToken,
     allowedOwner,
     tokenSource: dbzsToken ? "DBZS_HOME_API_TOKEN" : "GITEA_TOKEN",
-    transport: parseTransportMode(environment),
+    transport,
     httpPort: parseHttpPort(environment),
+    webhookSecret,
+    webhookTargetUrl,
+    fleetApiUrl: environment.DBZS_FLEET_API_URL?.trim() || undefined,
+    featureStarterHealthPath: environment.DBZS_FEATURE_STARTER_HEALTH_PATH?.trim() || undefined,
+    featureStarterExecutable,
+    featureStarterAllowHooks,
   };
 }

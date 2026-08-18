@@ -11,7 +11,12 @@ import { toDbzsError } from "./core/errors.js";
 import { DbzsEventBus, StderrLogger } from "./core/observability.js";
 import { GiteaClient } from "./gitea/client.js";
 import { LoopbackMcpHttpServer } from "./http/loopback-server.js";
-import { createMcpServer } from "./mcp/server.js";
+import { FleetCommanderClient } from "./integrations/fleet-commander-client.js";
+import { FeatureStarterHealthReader } from "./integrations/feature-starter-health-reader.js";
+import { FeatureStarterHook } from "./integrations/feature-starter-hook.js";
+import { createMcpServer, type Phase3Services } from "./mcp/server.js";
+import { GiteaWebhookReceiver } from "./webhooks/gitea-webhook-receiver.js";
+import { LocalWebhookService } from "./webhooks/local-webhook-service.js";
 
 /**
  * Registriert einen einmaligen, kontrollierten Shutdown für den lokalen HTTP-Transport.
@@ -78,6 +83,12 @@ async function startServer(): Promise<void> {
     tokenSource: configuration.tokenSource,
     transport: configuration.transport,
     ...(configuration.transport === "http" ? { httpHost: "127.0.0.1", httpPort: configuration.httpPort } : {}),
+    webhookReceiverEnabled: Boolean(configuration.webhookSecret),
+    localWebhookRegistrationEnabled: Boolean(configuration.webhookTargetUrl),
+    fleetCommanderEnabled: Boolean(configuration.fleetApiUrl),
+    featureStarterHealthEnabled: Boolean(configuration.featureStarterHealthPath),
+    featureStarterHookEnabled: Boolean(configuration.featureStarterExecutable),
+    featureStarterMutationsEnabled: configuration.featureStarterAllowHooks,
   });
 
   const giteaClient = new GiteaClient(
@@ -86,9 +97,35 @@ async function startServer(): Promise<void> {
     configuration.allowedOwner,
     eventBus,
   );
+  const localWebhook = configuration.webhookSecret && configuration.webhookTargetUrl
+    ? new LocalWebhookService({
+        targetUrl: configuration.webhookTargetUrl,
+        secret: configuration.webhookSecret,
+        giteaClient,
+        eventBus,
+      })
+    : undefined;
+  const phase3Services: Phase3Services = {
+    ...(configuration.fleetApiUrl
+      ? { fleetCommander: new FleetCommanderClient({ baseUrl: configuration.fleetApiUrl, eventBus }) }
+      : {}),
+    ...(configuration.featureStarterHealthPath
+      ? { featureStarterHealth: new FeatureStarterHealthReader({ healthPath: configuration.featureStarterHealthPath, eventBus }) }
+      : {}),
+    ...(configuration.featureStarterExecutable
+      ? {
+          featureStarterHook: new FeatureStarterHook({
+            executablePath: configuration.featureStarterExecutable,
+            allowHooks: configuration.featureStarterAllowHooks,
+            eventBus,
+          }),
+        }
+      : {}),
+    ...(localWebhook ? { localWebhook } : {}),
+  };
 
   if (configuration.transport === "stdio") {
-    const server = createMcpServer(giteaClient, eventBus);
+    const server = createMcpServer(giteaClient, eventBus, phase3Services);
     const transport = new StdioServerTransport();
     eventBus.publish("runtime.transport.connecting", "info", { transport: "stdio" });
     await server.connect(transport);
@@ -99,10 +136,19 @@ async function startServer(): Promise<void> {
     return;
   }
 
+  const webhookReceiver = configuration.webhookSecret
+    ? new GiteaWebhookReceiver({
+        secret: configuration.webhookSecret,
+        allowedOwner: configuration.allowedOwner,
+        eventBus,
+      })
+    : undefined;
   const httpServer = new LoopbackMcpHttpServer({
     port: configuration.httpPort,
     giteaClient,
     eventBus,
+    webhookReceiver,
+    phase3Services,
   });
   eventBus.publish("runtime.transport.connecting", "info", {
     transport: "http",
@@ -117,6 +163,7 @@ async function startServer(): Promise<void> {
     host: "127.0.0.1",
     port: configuration.httpPort,
     endpoint: "/mcp",
+    webhookEndpoint: webhookReceiver ? "/webhooks/gitea" : undefined,
   });
 }
 

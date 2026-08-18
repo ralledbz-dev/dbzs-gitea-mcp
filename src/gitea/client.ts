@@ -2,7 +2,7 @@
  * DBZS — Division By Zeros
  * Datei: gitea/client.ts
  * Zweck: Typisierten, policy-geschützten Adapter für die Gitea-REST-API /api/v1 bereitstellen.
- * Version: 0.2.0
+ * Version: 0.3.0
  */
 
 import { DbzsEventBus } from "../core/observability.js";
@@ -18,7 +18,7 @@ export type FetchFunction = (input: URL | string, init?: RequestInit) => Promise
  */
 interface GiteaRequestOptions {
   /** HTTP-Methode der unterstützten Phase-1- und Phase-2-Operationen. */
-  readonly method?: "GET" | "POST";
+  readonly method?: "GET" | "POST" | "DELETE";
   /** Optionaler Query-Parameterbestand ohne undefinierte Werte. */
   readonly query?: Record<string, string | number | boolean | undefined>;
   /** Optionaler JSON-Body für mutierende Actions-Aufrufe. */
@@ -168,6 +168,79 @@ export interface GiteaArtifact {
   readonly created_at?: string;
   readonly expires_at?: string;
   readonly [key: string]: unknown;
+}
+
+/**
+ * Repräsentiert eine Gitea-Release-Metadatenansicht ohne Binärübertragung.
+ */
+export interface GiteaRelease {
+  readonly id: number;
+  readonly tag_name: string;
+  readonly name?: string;
+  readonly body?: string;
+  readonly draft?: boolean;
+  readonly prerelease?: boolean;
+  readonly published_at?: string;
+  readonly html_url?: string;
+  readonly tarball_url?: string;
+  readonly zipball_url?: string;
+  readonly assets?: GiteaReleaseAsset[];
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Repräsentiert ein Release Asset ausschließlich durch überprüfbare Metadaten und Download-URL.
+ */
+export interface GiteaReleaseAsset {
+  readonly id: number;
+  readonly name: string;
+  readonly size?: number;
+  readonly download_count?: number;
+  readonly created_at?: string;
+  readonly browser_download_url?: string;
+  readonly uuid?: string;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Repräsentiert einen Owner-basierten Gitea-Package-Registry-Eintrag.
+ */
+export interface GiteaPackage {
+  readonly id: number;
+  readonly name: string;
+  readonly type: string;
+  readonly version: string;
+  readonly created_at?: string;
+  readonly html_url?: string;
+  readonly owner?: { readonly login?: string };
+  readonly repository?: { readonly full_name?: string; readonly name?: string };
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Beschreibt einen gesäuberten Repository-Webhook ohne Secrets oder Authorization-Header.
+ */
+export interface GiteaWebhook {
+  readonly id: number;
+  readonly type: string;
+  readonly name?: string;
+  readonly active?: boolean;
+  readonly branch_filter?: string;
+  readonly events?: string[];
+  readonly config?: Record<string, string>;
+  readonly created_at?: string;
+  readonly updated_at?: string;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Beschreibt die minimal kontrollierten Angaben für die Erstellung eines lokalen Gitea-Webhooks.
+ */
+export interface GiteaWebhookCreateRequest {
+  readonly targetUrl: string;
+  readonly secret: string;
+  readonly events: string[];
+  readonly branchFilter?: string;
 }
 
 /**
@@ -796,6 +869,230 @@ export class GiteaClient {
     return this.request<GiteaArtifact>(
       `${this.repositoryPath(owner, repositoryName)}/actions/artifacts/${encodeURIComponent(String(artifactId))}`,
     );
+  }
+
+  /**
+   * Listet Releases eines freigegebenen Repositories ohne Asset-Binärdaten zu laden.
+   *
+   * Was: Ruft die paginierte Release-Liste mit Draft- und Prerelease-Filtern ab.
+   * Warum: DBZS-Updateentscheidungen benötigen nachvollziehbare Release-Metadaten, aber keine verdeckten Downloads.
+   * Wofür: Für das schreibgeschützte MCP-Tool `gitea_list_releases`.
+   * Woher: Aus GET /repos/{owner}/{repo}/releases der Gitea-REST-API.
+   * Wo: Im Gitea-Release-Adapter hinter der Owner-Policy.
+   * Soll-Ergebnis: Release-Daten ausschließlich im freigegebenen Namespace.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param page Angefragte 1-basierte Seite.
+   * @param limit Maximale Anzahl von Releases.
+   * @param includeDrafts Ob Draft-Releases von Gitea berücksichtigt werden sollen.
+   * @param includePrereleases Ob Vorabversionen von Gitea berücksichtigt werden sollen.
+   * @returns Paginierte Release-Liste.
+   */
+  public async listReleases(
+    owner: string,
+    repositoryName: string,
+    page: number,
+    limit: number,
+    includeDrafts: boolean,
+    includePrereleases: boolean,
+  ): Promise<GiteaRelease[]> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaRelease[]>(`${this.repositoryPath(owner, repositoryName)}/releases`, {
+      query: { page, limit, draft: includeDrafts, "pre-release": includePrereleases },
+    });
+  }
+
+  /**
+   * Liest die Asset-Metadaten eines Releases ohne Binärtransfer.
+   *
+   * Was: Ruft die Release-Attachment-Liste ab.
+   * Warum: Installer und Update-Services brauchen Name, Größe und Download-URL, dürfen Assets jedoch nicht heimlich herunterladen.
+   * Wofür: Für das schreibgeschützte MCP-Tool `gitea_list_release_assets`.
+   * Woher: Aus GET /repos/{owner}/{repo}/releases/{id}/assets der Gitea-REST-API.
+   * Wo: Im Gitea-Release-Adapter hinter der Owner-Policy.
+   * Soll-Ergebnis: Ausschließlich Metadaten des abgefragten Releases.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param releaseId Numerische Release-ID.
+   * @returns Liste der Release-Asset-Metadaten.
+   */
+  public async listReleaseAssets(owner: string, repositoryName: string, releaseId: number): Promise<GiteaReleaseAsset[]> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaReleaseAsset[]>(
+      `${this.repositoryPath(owner, repositoryName)}/releases/${encodeURIComponent(String(releaseId))}/assets`,
+    );
+  }
+
+  /**
+   * Listet Packages des freigegebenen Owners.
+   *
+   * Was: Ruft den ownerbasierten Package-Registry-Endpunkt auf.
+   * Warum: Packages sind in Gitea owner- und nicht repositorygebunden; dieselbe Namespace-Policy muss daher explizit greifen.
+   * Wofür: Für das schreibgeschützte MCP-Tool `gitea_list_packages`.
+   * Woher: Aus GET /packages/{owner} der Gitea-REST-API.
+   * Wo: Im Package-Registry-Adapter.
+   * Soll-Ergebnis: Paginierte Package-Metadaten ohne Mutationen oder Downloads.
+   *
+   * @param owner Angefragter Package-Owner.
+   * @param page Angefragte 1-basierte Seite.
+   * @param limit Maximale Anzahl von Packages.
+   * @param packageType Optionaler Gitea-Package-Typ.
+   * @param query Optionaler Package-Namensfilter.
+   * @returns Paginierte Package-Liste.
+   */
+  public async listPackages(
+    owner: string,
+    page: number,
+    limit: number,
+    packageType?: string,
+    query?: string,
+  ): Promise<GiteaPackage[]> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaPackage[]>(`/packages/${encodeURIComponent(owner)}`, {
+      query: { page, limit, type: packageType, q: query },
+    });
+  }
+
+  /**
+   * Listet alle sichtbaren Versionen eines Owner-Package-Namens.
+   *
+   * Was: Ruft die Versionen eines nach Typ und Name präzisierten Packages ab.
+   * Warum: Updateplanung muss verfügbare Versionen sehen, ohne Registry-Daten zu verändern.
+   * Wofür: Für das schreibgeschützte MCP-Tool `gitea_list_package_versions`.
+   * Woher: Aus GET /packages/{owner}/{type}/{name} der Gitea-REST-API.
+   * Wo: Im Package-Registry-Adapter hinter Owner-Policy und Segmentkodierung.
+   * Soll-Ergebnis: Sichere Versionsmetadaten für den erlaubten Owner.
+   *
+   * @param owner Angefragter Package-Owner.
+   * @param packageType Gitea-Package-Typ.
+   * @param packageName Package-Name.
+   * @param page Angefragte 1-basierte Seite.
+   * @param limit Maximale Anzahl von Versionen.
+   * @returns Paginierte Package-Versionsliste.
+   */
+  public async listPackageVersions(
+    owner: string,
+    packageType: string,
+    packageName: string,
+    page: number,
+    limit: number,
+  ): Promise<GiteaPackage[]> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaPackage[]>(
+      `/packages/${encodeURIComponent(owner)}/${encodeURIComponent(packageType)}/${encodeURIComponent(packageName)}`,
+      { query: { page, limit } },
+    );
+  }
+
+  /**
+   * Listet gesäuberte Repository-Webhooks ohne Secret- oder Authorization-Header-Offenlegung.
+   *
+   * Was: Ruft Hooks ab und entfernt sensible Konfigurationsschlüssel vor der Rückgabe.
+   * Warum: Ein MCP-Read-Tool darf die Konfiguration nicht als Secret-Exfiltrationspfad missbrauchen.
+   * Wofür: Für das schreibgeschützte MCP-Tool `gitea_list_webhooks`.
+   * Woher: Aus GET /repos/{owner}/{repo}/hooks der Gitea-REST-API.
+   * Wo: Im Gitea-Webhook-Adapter hinter der Owner-Policy.
+   * Soll-Ergebnis: Prüffähige Hook-Metadaten ohne geheime Werte.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param page Angefragte 1-basierte Seite.
+   * @param limit Maximale Anzahl von Hooks.
+   * @returns Bereinigte Hook-Liste.
+   */
+  public async listWebhooks(owner: string, repositoryName: string, page: number, limit: number): Promise<GiteaWebhook[]> {
+    this.assertAllowedOwner(owner);
+    const hooks = await this.request<GiteaWebhook[]>(`${this.repositoryPath(owner, repositoryName)}/hooks`, {
+      query: { page, limit },
+    });
+    return hooks.map((hook) => this.sanitizeWebhook(hook));
+  }
+
+  /**
+   * Erstellt nach expliziter MCP-Bestätigung einen Gitea-Webhook für den lokalen DBZS-Receiver.
+   *
+   * Was: Sendet einen Gitea-Hook mit JSON-Payload, HMAC-Secret und klarer Eventliste an Gitea.
+   * Warum: Die Webhook-Runtime kann nur geprüfte Zustellungen eines absichtlich angelegten Hooks verarbeiten.
+   * Wofür: Für das mutierende MCP-Tool `gitea_create_local_webhook` nach `confirm: true`.
+   * Woher: Aus POST /repos/{owner}/{repo}/hooks der Gitea-REST-API.
+   * Wo: Im Gitea-Webhook-Adapter; Secret wird ausschließlich in der Request-Nutzlast verwendet.
+   * Soll-Ergebnis: Gesäuberte Hook-Metadaten ohne Rückgabe des Secrets.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param request Kontrollierte lokale Ziel- und HMAC-Konfiguration.
+   * @returns Gesäuberte Metadaten des erzeugten Hooks.
+   */
+  public async createLocalWebhook(
+    owner: string,
+    repositoryName: string,
+    request: GiteaWebhookCreateRequest,
+  ): Promise<GiteaWebhook> {
+    this.assertAllowedOwner(owner);
+    const webhook = await this.request<GiteaWebhook>(`${this.repositoryPath(owner, repositoryName)}/hooks`, {
+      method: "POST",
+      body: {
+        type: "gitea",
+        active: true,
+        events: request.events,
+        branch_filter: request.branchFilter ?? "*",
+        config: {
+          url: request.targetUrl,
+          content_type: "json",
+          secret: request.secret,
+        },
+      },
+    });
+    return this.sanitizeWebhook(webhook);
+  }
+
+  /**
+   * Entfernt nach expliziter MCP-Bestätigung einen Repository-Webhook.
+   *
+   * Was: Führt den Hook-Delete-Endpunkt aus.
+   * Warum: Remote-Webhook-Konfiguration ist eine Mutation und darf nur bewusst zurückgenommen werden.
+   * Wofür: Für das mutierende MCP-Tool `gitea_delete_webhook` nach `confirm: true`.
+   * Woher: Aus DELETE /repos/{owner}/{repo}/hooks/{id} der Gitea-REST-API.
+   * Wo: Im Gitea-Webhook-Adapter hinter Owner-Policy.
+   * Soll-Ergebnis: Die Gitea-API bestätigt die Löschung, ohne eine lokale Nebenliste zu führen.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param webhookId Numerische Hook-ID.
+   */
+  public async deleteWebhook(owner: string, repositoryName: string, webhookId: number): Promise<void> {
+    this.assertAllowedOwner(owner);
+    await this.request<unknown>(
+      `${this.repositoryPath(owner, repositoryName)}/hooks/${encodeURIComponent(String(webhookId))}`,
+      { method: "DELETE" },
+    );
+  }
+
+  /**
+   * Bereinigt sensible Hook-Responsefelder vor der MCP-Ausgabe.
+   *
+   * Was: Kopiert sichere Metadaten und verwirft Secret- sowie Authorization-Werte aus äußeren und config-Feldern.
+   * Warum: Hook-Listen dürfen niemals zum Auslesen von HMAC-Schlüsseln oder Zugangsdaten dienen.
+   * Wofür: Für alle Webhook-Read- und Write-Ergebnisse.
+   * Woher: Aus der Gitea-Hook-Antwort.
+   * Wo: An der Adapter-Ausgabegrenze vor MCP.
+   * Soll-Ergebnis: Funktionsfähige, aber nicht sensible Hook-Diagnosedaten.
+   *
+   * @param webhook Gitea-Hook-Antwort.
+   * @returns Bereinigte Hook-Metadaten.
+   */
+  private sanitizeWebhook(webhook: GiteaWebhook): GiteaWebhook {
+    const config = { ...(webhook.config ?? {}) };
+    for (const key of Object.keys(config)) {
+      if (["secret", "authorization", "authorization_header", "token", "password"].includes(key.toLowerCase())) {
+        delete config[key];
+      }
+    }
+
+    const { authorization_header: _authorizationHeader, ...safeWebhook } = webhook;
+    return { ...safeWebhook, config };
   }
 
   /**

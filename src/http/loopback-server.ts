@@ -1,7 +1,7 @@
 /**
  * DBZS — Division By Zeros
  * Datei: http/loopback-server.ts
- * Zweck: Lokalen, durch Host- und Origin-Guards geschützten MCP-HTTP-Transport unter /mcp bereitstellen.
+ * Zweck: Lokalen, durch Host- und Origin-Guards geschützten MCP-HTTP-Transport unter /mcp sowie optional signierte Gitea-Webhooks bereitstellen.
  * Version: 0.3.0
  */
 
@@ -11,7 +11,8 @@ import { localhostHostValidation, localhostOriginValidation, toNodeHandler } fro
 import { toDbzsError } from "../core/errors.js";
 import { DbzsEventBus } from "../core/observability.js";
 import { GiteaClient } from "../gitea/client.js";
-import { createMcpServer } from "../mcp/server.js";
+import { createMcpServer, type Phase3Services } from "../mcp/server.js";
+import { GiteaWebhookReceiver } from "../webhooks/gitea-webhook-receiver.js";
 
 /**
  * Repräsentiert die kontrollierten Laufzeitparameter des lokalen HTTP-Transports.
@@ -23,6 +24,10 @@ export interface LoopbackHttpServerOptions {
   readonly giteaClient: GiteaClient;
   /** Zentraler DBZS-EventBus für Transportereignisse. */
   readonly eventBus: DbzsEventBus;
+  /** Optionaler, HMAC-gesicherter Receiver für lokale Gitea-Zustellungen. */
+  readonly webhookReceiver?: GiteaWebhookReceiver;
+  /** Optional konfigurierte DBZS Phase-3-Integrationsservices für jede frische MCP-Session. */
+  readonly phase3Services?: Phase3Services;
 }
 
 /**
@@ -111,6 +116,27 @@ export class LoopbackMcpHttpServer {
   }
 
   /**
+   * Liefert den lokalen Gitea-Webhook-Endpunkt nur bei aktivierter HMAC-Receiver-Konfiguration.
+   *
+   * Was: Leitet den dynamisch gebundenen Port in den festen Webhook-Routenpfad über.
+   * Warum: Ein Hook darf erst nach expliziter Secret-Konfiguration und HTTP-Start konfiguriert werden.
+   * Wofür: Für sichere lokale Gitea-Hook-Registrierung und Runtime-Diagnose.
+   * Woher: Aus der Node-Listeneradresse und den Runtime-Optionen.
+   * Wo: An der HTTP-Runtime-Grenze.
+   * Soll-Ergebnis: Lokale Webhook-URL oder `undefined`, wenn der Receiver deaktiviert ist.
+   *
+   * @returns Vollständige lokale Webhook-URL oder `undefined`.
+   */
+  public get webhookEndpoint(): string | undefined {
+    const address = this.server?.address();
+    if (!this.options.webhookReceiver || !address || typeof address === "string") {
+      return undefined;
+    }
+
+    return `http://127.0.0.1:${address.port}/webhooks/gitea`;
+  }
+
+  /**
    * Startet den zustandslosen MCP-v2-Handler ausschließlich an 127.0.0.1.
    *
    * Was: Baut die per Request frische MCP-Server-Factory auf und bindet den Node-Listener an Loopback.
@@ -127,7 +153,9 @@ export class LoopbackMcpHttpServer {
       throw new Error("Der lokale MCP-HTTP-Server wurde bereits gestartet.");
     }
 
-    this.handler = createMcpHandler(() => createMcpServer(this.options.giteaClient, this.options.eventBus));
+    this.handler = createMcpHandler(() =>
+      createMcpServer(this.options.giteaClient, this.options.eventBus, this.options.phase3Services),
+    );
     const nodeHandler = toNodeHandler(this.handler, {
       onerror: (error) => {
         const dbzsError = toDbzsError(error);
@@ -147,13 +175,15 @@ export class LoopbackMcpHttpServer {
         path,
       });
 
-      if (path !== "/mcp") {
+      const isMcpRoute = path === "/mcp";
+      const isWebhookRoute = path === "/webhooks/gitea" && this.options.webhookReceiver !== undefined;
+      if (!isMcpRoute && !isWebhookRoute) {
         this.options.eventBus.publish("http.request.rejected", "warn", {
           reason: "route_not_found",
           method: request.method ?? "UNKNOWN",
           path,
         });
-        writeJsonError(response, 404, "Nur der lokale MCP-Endpunkt /mcp ist verfügbar.");
+        writeJsonError(response, 404, "Nur /mcp und ein ausdrücklich aktivierter lokaler Gitea-Webhook sind verfügbar.");
         return;
       }
 
@@ -162,6 +192,20 @@ export class LoopbackMcpHttpServer {
           reason: "host_or_origin_validation_failed",
           method: request.method ?? "UNKNOWN",
           path,
+        });
+        return;
+      }
+
+      if (isWebhookRoute) {
+        void this.options.webhookReceiver?.handle(request, response).catch((error: unknown) => {
+          const dbzsError = toDbzsError(error);
+          this.options.eventBus.publish("webhook.gitea.failed", "error", {
+            errorCode: dbzsError.code,
+            errorMessage: dbzsError.message,
+          });
+          if (!response.headersSent && !response.destroyed) {
+            writeJsonError(response, 500, "Der lokale Gitea-Webhook konnte nicht verarbeitet werden.");
+          }
         });
         return;
       }
@@ -210,6 +254,7 @@ export class LoopbackMcpHttpServer {
       host: "127.0.0.1",
       port: this.options.port,
       endpoint: "/mcp",
+      webhookEndpoint: this.options.webhookReceiver ? "/webhooks/gitea" : undefined,
     });
   }
 

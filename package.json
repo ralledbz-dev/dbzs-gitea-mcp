@@ -1,6 +1,6 @@
 {
   "name": "dbzs-gitea-mcp",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "DBZS Gitea MCP Server mit stdio-Transport und policy-geschützter Gitea REST API Integration.",

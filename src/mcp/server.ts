@@ -1,8 +1,8 @@
 /**
  * DBZS — Division By Zeros
  * Datei: mcp/server.ts
- * Zweck: Phase-1-MCP-Tools mit Eingabevalidierung, Bestätigungs-Gate und DBZS-Observability registrieren.
- * Version: 0.2.0
+ * Zweck: DBZS Gitea-, Webhook-, Release-, Registry- und lokale Integrationswerkzeuge mit Eingabevalidierung, Bestätigungs-Gate und Observability registrieren.
+ * Version: 0.3.0
  */
 
 import { McpServer } from "@modelcontextprotocol/server";
@@ -10,6 +10,10 @@ import * as z from "zod/v4";
 import { toDbzsError } from "../core/errors.js";
 import { DbzsEventBus } from "../core/observability.js";
 import { GiteaClient } from "../gitea/client.js";
+import { FleetCommanderClient } from "../integrations/fleet-commander-client.js";
+import { FeatureStarterHealthReader } from "../integrations/feature-starter-health-reader.js";
+import { FeatureStarterHook } from "../integrations/feature-starter-hook.js";
+import { LocalWebhookService } from "../webhooks/local-webhook-service.js";
 
 /**
  * Serialisiert einen beliebigen API-Wert stabil für eine MCP-Textantwort.
@@ -95,6 +99,20 @@ async function executeTool(
 }
 
 /**
+ * Beschreibt optional verfügbare Phase-3-Integrationsservices.
+ */
+export interface Phase3Services {
+  /** Bestehende lokale Fleet-Commander-Control-Plane; nur Read-Adapter. */
+  readonly fleetCommander?: FleetCommanderClient;
+  /** Bestehende atomare Feature-Starter-Health-Sicht; nur Read-Adapter. */
+  readonly featureStarterHealth?: FeatureStarterHealthReader;
+  /** Bestehende Feature-Starter-CLI-Verträge für Update und Installer. */
+  readonly featureStarterHook?: FeatureStarterHook;
+  /** Lokaler HMAC-Webhook-Registrierungsservice. */
+  readonly localWebhook?: LocalWebhookService;
+}
+
+/**
  * Registriert alle Phase-1-Tools auf einem offiziellen MCP-v2-Server.
  *
  * Was: Erstellt den Server und bindet Repository- sowie Actions-Operationen an GiteaClient-Methoden.
@@ -108,15 +126,20 @@ async function executeTool(
  * @param eventBus Zentraler DBZS-EventBus.
  * @returns Konfigurierter MCP-Server ohne verbundenen Transport.
  */
-export function createMcpServer(giteaClient: GiteaClient, eventBus: DbzsEventBus): McpServer {
+export function createMcpServer(
+  giteaClient: GiteaClient,
+  eventBus: DbzsEventBus,
+  phase3Services: Phase3Services = {},
+): McpServer {
   const server = new McpServer({
     name: "dbzs-gitea-mcp",
-    version: "0.2.0",
+    version: "0.3.0",
   });
 
   const ownerSchema = z.string().trim().min(1).max(100);
   const repositorySchema = z.string().trim().min(1).max(255);
   const paginationSchema = z.number().int().min(1).max(100);
+  let toolCount = 21;
 
   server.registerTool(
     "gitea_list_repositories",
@@ -428,6 +451,202 @@ export function createMcpServer(giteaClient: GiteaClient, eventBus: DbzsEventBus
       executeTool(eventBus, "gitea_get_artifact", () => giteaClient.getArtifact(owner, repo, artifactId)),
   );
 
-  eventBus.publish("mcp.server.tools_registered", "info", { toolCount: 21 });
+  server.registerTool(
+    "gitea_list_releases",
+    {
+      title: "Gitea-Releases auflisten",
+      description: "Liest paginierte Release-Metadaten inklusive sicherer Asset-Metadaten. Es werden keine Archive oder Release Assets heruntergeladen.",
+      inputSchema: z.object({
+        owner: ownerSchema,
+        repo: repositorySchema,
+        page: paginationSchema.default(1),
+        limit: paginationSchema.default(30),
+        includeDrafts: z.boolean().default(false),
+        includePrereleases: z.boolean().default(true),
+      }),
+    },
+    async ({ owner, repo, page, limit, includeDrafts, includePrereleases }) =>
+      executeTool(eventBus, "gitea_list_releases", () =>
+        giteaClient.listReleases(owner, repo, page, limit, includeDrafts, includePrereleases),
+      ),
+  );
+  toolCount += 1;
+
+  server.registerTool(
+    "gitea_list_release_assets",
+    {
+      title: "Gitea-Release-Assets auflisten",
+      description: "Liest Metadaten und Gitea-Download-URLs der Assets eines Releases, ohne Binärdaten zu laden.",
+      inputSchema: z.object({ owner: ownerSchema, repo: repositorySchema, releaseId: positiveIdSchema }),
+    },
+    async ({ owner, repo, releaseId }) =>
+      executeTool(eventBus, "gitea_list_release_assets", () => giteaClient.listReleaseAssets(owner, repo, releaseId)),
+  );
+  toolCount += 1;
+
+  server.registerTool(
+    "gitea_list_packages",
+    {
+      title: "Gitea-Package-Registry auflisten",
+      description: "Liest ownerbasierte Package-Registry-Metadaten im freigegebenen Namespace ohne Download, Upload oder Löschung.",
+      inputSchema: z.object({
+        owner: ownerSchema,
+        page: paginationSchema.default(1),
+        limit: paginationSchema.default(30),
+        packageType: z.string().trim().regex(/^[a-z][a-z0-9-]{0,30}$/).optional(),
+        query: z.string().trim().min(1).max(255).optional(),
+      }),
+    },
+    async ({ owner, page, limit, packageType, query }) =>
+      executeTool(eventBus, "gitea_list_packages", () => giteaClient.listPackages(owner, page, limit, packageType, query)),
+  );
+  toolCount += 1;
+
+  server.registerTool(
+    "gitea_list_package_versions",
+    {
+      title: "Gitea-Package-Versionen auflisten",
+      description: "Liest Versionen eines ownerbasierten Gitea-Packages im freigegebenen Namespace ohne Registry-Mutation.",
+      inputSchema: z.object({
+        owner: ownerSchema,
+        packageType: z.string().trim().regex(/^[a-z][a-z0-9-]{0,30}$/),
+        packageName: z.string().trim().min(1).max(255),
+        page: paginationSchema.default(1),
+        limit: paginationSchema.default(30),
+      }),
+    },
+    async ({ owner, packageType, packageName, page, limit }) =>
+      executeTool(eventBus, "gitea_list_package_versions", () =>
+        giteaClient.listPackageVersions(owner, packageType, packageName, page, limit),
+      ),
+  );
+  toolCount += 1;
+
+  server.registerTool(
+    "gitea_list_webhooks",
+    {
+      title: "Gitea-Repository-Webhooks auflisten",
+      description: "Liest gesäuberte Hook-Metadaten eines Repositories. Secrets und Authorization-Header werden nie ausgegeben.",
+      inputSchema: z.object({ owner: ownerSchema, repo: repositorySchema, page: paginationSchema.default(1), limit: paginationSchema.default(30) }),
+    },
+    async ({ owner, repo, page, limit }) =>
+      executeTool(eventBus, "gitea_list_webhooks", () => giteaClient.listWebhooks(owner, repo, page, limit)),
+  );
+  toolCount += 1;
+
+  if (phase3Services.localWebhook) {
+    const webhookEventSchema = z.enum(["push", "release", "package", "workflow_run", "workflow_job", "pull_request", "issues"]);
+    server.registerTool(
+      "gitea_create_local_webhook",
+      {
+        title: "Lokalen DBZS Gitea-Webhook erstellen",
+        description: "Schreiboperation: Erstellt nach confirm: true einen signierten Gitea-Webhook ausschließlich für den vorab konfigurierten lokalen DBZS-Receiver. Zieladresse und Secret sind nicht über MCP veränderbar.",
+        inputSchema: z.object({
+          owner: ownerSchema,
+          repo: repositorySchema,
+          events: z.array(webhookEventSchema).min(1).max(7),
+          branchFilter: z.string().trim().min(1).max(500).optional(),
+          confirm: z.literal(true),
+        }),
+      },
+      async ({ owner, repo, events, branchFilter }) =>
+        executeTool(eventBus, "gitea_create_local_webhook", () => phase3Services.localWebhook!.create(owner, repo, events, branchFilter)),
+    );
+    toolCount += 1;
+
+    server.registerTool(
+      "gitea_delete_local_webhook",
+      {
+        title: "Lokalen DBZS Gitea-Webhook entfernen",
+        description: "Schreiboperation: Entfernt nach confirm: true ausschließlich einen Hook, dessen sichtbare Zieladresse dem konfigurierten lokalen DBZS-Receiver entspricht.",
+        inputSchema: z.object({ owner: ownerSchema, repo: repositorySchema, webhookId: positiveIdSchema, confirm: z.literal(true) }),
+      },
+      async ({ owner, repo, webhookId }) =>
+        executeTool(eventBus, "gitea_delete_local_webhook", async () => {
+          const hooks = await giteaClient.listWebhooks(owner, repo, 1, 100);
+          const webhook = hooks.find((candidate) => candidate.id === webhookId);
+          if (!webhook) {
+            throw new Error("Der angeforderte Gitea-Webhook wurde nicht gefunden oder ist nicht sichtbar.");
+          }
+          phase3Services.localWebhook!.assertLocalTarget(webhook);
+          await phase3Services.localWebhook!.remove(owner, repo, webhookId);
+          return { deleted: true, webhookId };
+        }),
+    );
+    toolCount += 1;
+  }
+
+  if (phase3Services.fleetCommander) {
+    const fleetCommander = phase3Services.fleetCommander;
+    const fleetTools: ReadonlyArray<readonly [string, string, () => Promise<unknown>]> = [
+      ["dbzs_get_fleet_health", "Liest den versionierten Healthstatus der bestehenden lokalen DBZS Fleet Commander Control Plane.", () => fleetCommander.getHealth()],
+      ["dbzs_get_fleet_dashboard", "Liest die durch Fleet Commander besessene Dashboard-Projektion ohne Runtime-Mutation.", () => fleetCommander.getDashboard()],
+      ["dbzs_get_fleet_operating_status", "Liest Commissioning-, Production- und Maintenance-Status aus der bestehenden Fleet Control Plane.", () => fleetCommander.getOperatingStatus()],
+      ["dbzs_list_fleet_services", "Liest die von Fleet Commander verwalteten Ready-Service-Projektionen ohne Operator-Aktion.", () => fleetCommander.getServices()],
+      ["dbzs_list_fleet_events", "Liest jüngste Fleet-Commander-Ereignisse für lokale Diagnosezwecke.", () => fleetCommander.getEvents()],
+    ];
+    for (const [name, description, operation] of fleetTools) {
+      server.registerTool(name, { title: name, description, inputSchema: z.object({}) }, async () => executeTool(eventBus, name, operation));
+      toolCount += 1;
+    }
+  }
+
+  if (phase3Services.featureStarterHealth) {
+    const featureStarterHealth = phase3Services.featureStarterHealth;
+    server.registerTool(
+      "dbzs_get_feature_starter_health",
+      {
+        title: "DBZS Feature Starter Plattformstatus lesen",
+        description: "Liest ausschließlich die atomar publizierte read-only platform-health.json. Feature Starter bleibt kanonischer Bootstrap- und Lifecycle-Controller.",
+        inputSchema: z.object({}),
+      },
+      async () => executeTool(eventBus, "dbzs_get_feature_starter_health", () => featureStarterHealth.readHealth()),
+    );
+    toolCount += 1;
+  }
+
+  if (phase3Services.featureStarterHook) {
+    const featureStarterHook = phase3Services.featureStarterHook;
+    server.registerTool(
+      "dbzs_check_feature_starter_updates",
+      {
+        title: "DBZS Feature Starter Updates prüfen",
+        description: "Delegiert eine schreibgeschützte Update-Prüfung an den bestehenden DBZS Feature Starter. Die bestehende Update-Logik, Historie und Worktree-Policy bleiben dort verankert.",
+        inputSchema: z.object({}),
+      },
+      async () => executeTool(eventBus, "dbzs_check_feature_starter_updates", () => featureStarterHook.checkUpdates()),
+    );
+    toolCount += 1;
+
+    server.registerTool(
+      "dbzs_apply_feature_starter_updates",
+      {
+        title: "DBZS Feature Starter Updates anwenden",
+        description: "Schreiboperation: Delegiert nach confirm: true ausschließlich an den bestehenden transaktionalen Feature-Starter-Update-Manager. Zusätzlich muss DBZS_FEATURE_STARTER_ALLOW_HOOKS=true gesetzt sein.",
+        inputSchema: z.object({ confirm: z.literal(true) }),
+      },
+      async () => executeTool(eventBus, "dbzs_apply_feature_starter_updates", () => featureStarterHook.applyUpdates()),
+    );
+    toolCount += 1;
+
+    server.registerTool(
+      "dbzs_run_feature_starter_install_all",
+      {
+        title: "DBZS Feature Starter Vollinstallation starten",
+        description: "Schreiboperation: Delegiert nach confirm: true an den vorhandenen DBZS Feature Starter Installer-CLI-Vertrag. Zusätzlich muss DBZS_FEATURE_STARTER_ALLOW_HOOKS=true gesetzt sein.",
+        inputSchema: z.object({ confirm: z.literal(true) }),
+      },
+      async () => executeTool(eventBus, "dbzs_run_feature_starter_install_all", () => featureStarterHook.installAll()),
+    );
+    toolCount += 1;
+  }
+
+  eventBus.publish("mcp.server.tools_registered", "info", {
+    toolCount,
+    localWebhookEnabled: Boolean(phase3Services.localWebhook),
+    fleetCommanderEnabled: Boolean(phase3Services.fleetCommander),
+    featureStarterHealthEnabled: Boolean(phase3Services.featureStarterHealth),
+    featureStarterHookEnabled: Boolean(phase3Services.featureStarterHook),
+  });
   return server;
 }
