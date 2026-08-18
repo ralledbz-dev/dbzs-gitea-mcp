@@ -73,21 +73,104 @@ Ein lokaler MCP-Client kann den gebauten Server beispielsweise mit der folgenden
 
 ## Verfügbare MCP-Tools
 
-Die Read-Tools führen keine Gitea-Mutation aus. Die beiden Write-Tools verlangen zwingend den Booleschen Parameter `confirm: true`; ohne diesen Parameter verwirft die Eingabevalidierung den Aufruf vor dem Gitea-Request. Jede repositorybezogene Operation prüft den übergebenen `owner` gegen `GITEA_ALLOWED_OWNER`, bevor eine Netzwerkverbindung aufgebaut wird.
+Die Read-Tools führen keine Gitea-Mutation aus und tragen die Annotation `readOnlyHint: true`. Alle Write-Tools verlangen zwingend den Booleschen Parameter `confirm: true`; ohne diesen Parameter verwirft die Eingabevalidierung den Aufruf vor dem Gitea-Request, und sie tragen `destructiveHint: true`. Jede repositorybezogene Operation prüft den übergebenen `owner` gegen `GITEA_ALLOWED_OWNER`, bevor eine Netzwerkverbindung aufgebaut wird. Die Toolregistrierung ist nach Kategorie in `src/tools/*.ts` aufgeteilt (`src/tools/shared.ts` leitet die Annotationen mechanisch aus der `confirm`-Konvention ab).
+
+Insgesamt sind **26 Tools immer registriert**; bis zu 11 weitere Phase-3-Tools kommen hinzu, sobald die jeweilige optionale Integration konfiguriert ist (siehe unten).
+
+### Repositories und Inhalte (`src/tools/repositories.ts`)
 
 | Tool | Kategorie | Zweck |
 | --- | --- | --- |
 | `gitea_list_repositories` | Read | Listet für den Token sichtbare Repositories und filtert sie auf den erlaubten Owner |
 | `gitea_get_repository` | Read | Liest Metadaten eines Repositorys |
 | `gitea_get_contents` | Read | Liest eine Datei oder einen Verzeichnisinhalt; unterstützt optional `ref` |
+
+### Branches und Commits (`src/tools/branches-commits.ts`)
+
+| Tool | Kategorie | Zweck |
+| --- | --- | --- |
+| `gitea_list_branches` | Read | Listet Branches inklusive Schutz- und Head-Commit-Metadaten |
+| `gitea_get_branch` | Read | Liest einen einzelnen Branch |
+| `gitea_list_commits` | Read | Listet Commits, optional gefiltert nach `ref`/`path` |
+| `gitea_get_commit` | Read | Liest Metadaten eines einzelnen Commits |
+
+### Pull Requests und Issues (`src/tools/pull-requests-issues.ts`)
+
+| Tool | Kategorie | Zweck |
+| --- | --- | --- |
+| `gitea_list_pull_requests` | Read | Listet Pull Requests mit Status- und Zielbranchfilter |
+| `gitea_get_pull_request` | Read | Liest Details eines Pull Requests |
+| `gitea_list_issues` | Read | Listet Issues (ohne Pull Requests) mit Status- und Volltextfilter |
+| `gitea_get_issue` | Read | Liest Details eines Issues |
+
+### Actions: Workflows, Runs, Jobs, Runner (`src/tools/actions.ts`)
+
+| Tool | Kategorie | Zweck |
+| --- | --- | --- |
 | `gitea_list_workflows` | Read | Listet Gitea-Actions-Workflows mit Paginierung |
 | `gitea_list_workflow_runs` | Read | Listet Workflow-Runs; optional auf `workflowId` eingeschränkt |
 | `gitea_dispatch_workflow` | Write, `confirm: true` | Löst einen Workflow mit `ref` und String-Inputs aus |
 | `gitea_rerun_workflow` | Write, `confirm: true` | Startet einen vollständigen erneuten Lauf eines Workflow-Runs |
+| `gitea_list_workflow_jobs` | Read | Listet die Jobs eines Workflow-Runs |
+| `gitea_get_workflow_job_log` | Read | Liest ein Job-Log als lokal begrenzten Text |
+| `gitea_list_runners` | Read | Listet für ein Repository sichtbare Actions-Runner |
+| `gitea_get_runner` | Read | Liest Details eines einzelnen Runners |
 
 Für Dispatch wird Giteas Endpoint `/repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches` mit `return_run_details=true` verwendet. Bei Unterstützung durch die Gitea-Instanz enthält die Antwort damit die Run-ID sowie API- und HTML-URLs.[2] Ein Rerun verwendet `/repos/{owner}/{repo}/actions/runs/{run}/rerun`; Gitea dokumentiert dafür eine neue Workflow-Run-Antwort mit HTTP `201`.[3]
 
+### Artifacts, Releases und Packages (`src/tools/artifacts-releases.ts`, `src/tools/packages.ts`)
+
+| Tool | Kategorie | Zweck |
+| --- | --- | --- |
+| `gitea_list_artifacts` | Read | Listet Artifact-Metadaten eines Repositorys oder Runs, ohne Download |
+| `gitea_get_artifact` | Read | Liest Metadaten eines einzelnen Artifacts |
+| `gitea_list_releases` | Read | Listet Release-Metadaten inklusive sicherer Asset-Metadaten |
+| `gitea_list_release_assets` | Read | Listet Asset-Metadaten und Download-URLs eines Releases |
+| `gitea_list_packages` | Read | Listet ownerbasierte Package-Registry-Metadaten |
+| `gitea_list_package_versions` | Read | Listet Versionen eines Packages |
+
+### Webhooks (`src/tools/webhooks.ts`)
+
+| Tool | Kategorie | Zweck |
+| --- | --- | --- |
+| `gitea_list_webhooks` | Read | Listet gesäuberte Hook-Metadaten (Secrets nie enthalten) |
+| `gitea_create_local_webhook` *(optional)* | Write, `confirm: true` | Erstellt einen Hook ausschließlich für den konfigurierten lokalen Receiver |
+| `gitea_delete_local_webhook` *(optional)* | Write, `confirm: true` | Entfernt ausschließlich einen Hook mit lokaler Zieladresse |
+
+Die beiden optionalen Webhook-Tools erscheinen nur, wenn `GITEA_WEBHOOK_SECRET` und `GITEA_WEBHOOK_TARGET_URL` gemeinsam gesetzt sind.
+
+### DBZS Fleet Commander Integration (`src/tools/fleet-commander.ts`, optional)
+
+| Tool | Kategorie | Zweck |
+| --- | --- | --- |
+| `dbzs_get_fleet_health` | Read | Healthstatus der lokalen Fleet Commander Control Plane |
+| `dbzs_get_fleet_dashboard` | Read | Dashboard-Projektion von Fleet Commander |
+| `dbzs_get_fleet_operating_status` | Read | Commissioning-/Production-/Maintenance-Status |
+| `dbzs_list_fleet_services` | Read | Ready-Service-Projektionen |
+| `dbzs_list_fleet_events` | Read | Jüngste Fleet-Commander-Ereignisse |
+
+Erscheint nur, wenn `DBZS_FLEET_API_URL` gesetzt ist.
+
+### DBZS Feature Starter Integration (`src/tools/feature-starter.ts`, optional)
+
+| Tool | Kategorie | Zweck |
+| --- | --- | --- |
+| `dbzs_get_feature_starter_health` | Read | Liest die atomar publizierte `platform-health.json` |
+| `dbzs_check_feature_starter_updates` | Read | Prüft Updates über den bestehenden Feature-Starter-CLI-Vertrag |
+| `dbzs_apply_feature_starter_updates` | Write, `confirm: true` | Wendet Updates über Feature Starter an; zusätzlich `DBZS_FEATURE_STARTER_ALLOW_HOOKS=true` erforderlich |
+| `dbzs_run_feature_starter_install_all` | Write, `confirm: true` | Startet die Feature-Starter-Vollinstallation; zusätzlich `DBZS_FEATURE_STARTER_ALLOW_HOOKS=true` erforderlich |
+
+Die Health-Read erscheint bei gesetztem `DBZS_FEATURE_STARTER_HEALTH_PATH`, die drei Hook-Tools bei gesetztem `DBZS_FEATURE_STARTER_EXECUTABLE`.
+
 ## Betrieb, Fehlerbehandlung und Logs
+
+Im HTTP-Modus (`MCP_TRANSPORT=http`) stellt der Server zusätzlich zu `/mcp` drei Betriebsendpunkte bereit, die denselben Host- und Origin-Guards unterliegen:
+
+| Endpunkt | Methode | Antwort |
+| --- | --- | --- |
+| `/health` | GET | `{ "service": "dbzs-gitea-mcp", "status": "healthy" }`, sobald der Listener aktiv ist. Kein Fremdsystem-Aufruf. |
+| `/ready` | GET | `{ "service": "dbzs-gitea-mcp", "status": "ready", "version": "...", "tools": <Anzahl> }`, ebenfalls ohne Fremdsystem-Aufruf — geeignet für häufiges externes Polling (z. B. durch DBZS Feature Starter). |
+| `/version` | GET | `{ "service": "dbzs-gitea-mcp", "version": "..." }`, identisch mit der in `tools/list` gemeldeten MCP-Protokollversion und `package.json`. |
 
 Der EventBus veröffentlicht relevante Runtime-, Policy-, MCP- und Gitea-Request-Ereignisse. Ein `StderrLogger` schreibt diese als einzelne JSON-Zeilen nach `stderr`. Dies gewährleistet, dass `stdout` ausschließlich dem MCP-stdio-Protokoll vorbehalten bleibt. Logs enthalten keine Tokenwerte. API-Fehler enthalten HTTP-Status, relativen API-Pfad und eine auf maximal 500 Zeichen begrenzte Gitea-Fehlermeldung.
 
@@ -105,6 +188,8 @@ Fehler werden nicht verschluckt. Eine abgelehnte Owner-Policy, fehlende Konfigur
 ## Geplanter Ausbau
 
 Phase 2 ergänzt einen auf `127.0.0.1` beschränkten Streamable-HTTP-Transport unter `/mcp` sowie Branches, Commits, Pull Requests, Issues, Workflow-Jobs und Logs, Runner-Status und Artifacts. Ein späterer LAN- oder Remote-Betrieb erfordert zusätzlich Authentifizierung, TLS, Origin-Prüfung und eine explizite Allowlist. Phase 3 umfasst Releases, Package Registry, Webhooks, Integrationen in Fleet Commander beziehungsweise Feature Starter sowie DBZS-Update- und Installer-Hooks.
+
+Zur Anbindung an ChatGPT/OpenAI über den OpenAI Secure MCP Tunnel siehe `docs/OPENAI_MCP_CONNECTION.md` — der Server ist dafür bereits vorbereitet (`/health`, `/ready`, `/version`, Tool-Annotationen); die eigentliche Tunnel-Einrichtung erfordert manuelle Schritte im OpenAI-Dashboard.
 
 ## Referenzen
 

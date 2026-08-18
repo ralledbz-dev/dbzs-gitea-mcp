@@ -1,11 +1,11 @@
 /**
  * DBZS — Division By Zeros
- * Datei: core/config.ts
+ * Datei: security/config.ts
  * Zweck: Sichere Runtime-Konfiguration aus Environment Variables validieren und normalisieren.
  * Version: 0.3.0
  */
 
-import { DbzsError } from "./errors.js";
+import { DbzsError } from "../core/errors.js";
 
 /**
  * Beschreibt die unterstützten lokalen MCP-Transporte.

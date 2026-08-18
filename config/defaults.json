@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "note": "Ausschließlich nicht-geheime Referenzwerte zur Dokumentation. Diese Datei wird vom Server nicht eingelesen; die tatsächliche Konfiguration erfolgt ausschließlich über Environment Variables (siehe .env.example und DBZS Gitea MCP Server.md).",
+  "transport": {
+    "default": "stdio",
+    "http": {
+      "host": "127.0.0.1",
+      "port": 3939,
+      "endpoints": ["/mcp", "/health", "/ready", "/version", "/webhooks/gitea"]
+    }
+  },
+  "gitea": {
+    "baseUrlExample": "http://127.0.0.1:3000",
+    "allowedOwnerExample": "devdbzemusic"
+  },
+  "security": {
+    "secrets": "environment-variables-only",
+    "persistSecrets": false,
+    "bindLocalServicesToLoopback": true
+  }
+}

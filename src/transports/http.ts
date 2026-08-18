@@ -1,8 +1,9 @@
 /**
  * DBZS — Division By Zeros
- * Datei: http/loopback-server.ts
- * Zweck: Lokalen, durch Host- und Origin-Guards geschützten MCP-HTTP-Transport unter /mcp sowie optional signierte Gitea-Webhooks bereitstellen.
- * Version: 0.3.0
+ * Datei: transports/http.ts
+ * Zweck: Lokalen, durch Host- und Origin-Guards geschützten MCP-HTTP-Transport unter /mcp, die Betriebsendpunkte
+ * /health, /ready und /version sowie optional signierte Gitea-Webhooks bereitstellen.
+ * Version: 0.4.0
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -11,7 +12,8 @@ import { localhostHostValidation, localhostOriginValidation, toNodeHandler } fro
 import { toDbzsError } from "../core/errors.js";
 import { DbzsEventBus } from "../core/observability.js";
 import { GiteaClient } from "../gitea/client.js";
-import { createMcpServer, type Phase3Services } from "../mcp/server.js";
+import { buildHealthPayload, buildReadyPayload, buildVersionPayload } from "../health/probe.js";
+import { countConfiguredTools, createMcpServer, type Phase3Services } from "../server/mcp-server.js";
 import { GiteaWebhookReceiver } from "../webhooks/gitea-webhook-receiver.js";
 
 /**
@@ -33,13 +35,6 @@ export interface LoopbackHttpServerOptions {
 /**
  * Liefert den URL-Pfad einer Node-HTTP-Anfrage ohne Query-Parameter.
  *
- * Was: Normalisiert die optionale Node-Request-URL zu einem sicheren Pathname.
- * Warum: Route-Vergleiche dürfen nicht durch Query-Parameter oder eine fehlende URL verfälscht werden.
- * Wofür: Für die ausschließliche Freigabe des MCP-Endpunkts `/mcp`.
- * Woher: Aus `IncomingMessage.url` des lokalen Node-HTTP-Servers.
- * Wo: Vor jeder Host-, Origin- und Handler-Verarbeitung.
- * Soll-Ergebnis: Ein stabiler Pathname für die lokale Routenpolicy.
- *
  * @param request Eingehende Node-HTTP-Anfrage.
  * @returns Normalisierter URL-Pfad ohne Query-Parameter.
  */
@@ -49,13 +44,6 @@ function getRequestPath(request: IncomingMessage): string {
 
 /**
  * Schreibt eine kleine, sichere JSON-Fehlerantwort ohne MCP-Tooldetails.
- *
- * Was: Sendet Status, Content-Type und einen stabilen Fehlerkörper.
- * Warum: Nicht erlaubte Routen und Methoden müssen vor dem MCP-Handler klar abgewiesen werden.
- * Wofür: Für die Loopback-Transportgrenze.
- * Woher: Aus der lokalen HTTP-Routing- und Sicherheitsrichtlinie.
- * Wo: Im Node-HTTP-Request-Handler.
- * Soll-Ergebnis: Deterministische HTTP-Fehler ohne geheime Kontextdaten.
  *
  * @param response Node-HTTP-Antwortobjekt.
  * @param statusCode HTTP-Statuscode.
@@ -67,14 +55,26 @@ function writeJsonError(response: ServerResponse, statusCode: number, message: s
 }
 
 /**
+ * Schreibt eine erfolgreiche JSON-Antwort für die Betriebsendpunkte /health, /ready und /version.
+ *
+ * @param response Node-HTTP-Antwortobjekt.
+ * @param statusCode HTTP-Statuscode.
+ * @param payload Serialisierbare Antwortdaten.
+ */
+function writeJsonSuccess(response: ServerResponse, statusCode: number, payload: unknown): void {
+  response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+  response.end(JSON.stringify(payload));
+}
+
+/**
  * Kapselt den zustandslosen MCP-v2-HTTP-Handler in einem ausschließlich lokal gebundenen Node-Server.
  *
- * Was: Erstellt und verwaltet einen `node:http`-Server mit `/mcp`-Routing und SDK-Handler.
+ * Was: Erstellt und verwaltet einen `node:http`-Server mit `/mcp`-, `/health`-, `/ready`-, `/version`-Routing und SDK-Handler.
  * Warum: Der HTTP-Transport soll additive Infrastruktur bleiben und keinerlei Gitea-Business-Logik enthalten.
- * Wofür: Für lokale Streamable-HTTP-MCP-Clients in Phase 2.
+ * Wofür: Für lokale Streamable-HTTP-MCP-Clients sowie externe Prozessüberwachung (z. B. DBZS Feature Starter).
  * Woher: Aus `createMcpHandler`, `toNodeHandler` und den Loopback-Guards des offiziellen MCP SDK v2.
- * Wo: Zwischen der DBZS-Runtime und einem lokalen MCP-Client.
- * Soll-Ergebnis: Ein nur auf 127.0.0.1 erreichbarer, beobachtbarer und sauber stoppbarer `/mcp`-Dienst.
+ * Wo: Zwischen der DBZS-Runtime und einem lokalen MCP-Client oder Monitoring-Prozess.
+ * Soll-Ergebnis: Ein nur auf 127.0.0.1 erreichbarer, beobachtbarer und sauber stoppbarer Dienst.
  */
 export class LoopbackMcpHttpServer {
   private server?: Server;
@@ -83,26 +83,12 @@ export class LoopbackMcpHttpServer {
   /**
    * Erstellt die Runtime-Hülle für den lokalen MCP-HTTP-Listener.
    *
-   * Was: Übernimmt validierte Transportoptionen und hält erst beim Start Server- und Handlerinstanzen.
-   * Warum: Konstruktion muss nebenwirkungsfrei bleiben und Tests eine kontrollierte Runtime erlauben.
-   * Wofür: Für Start, Stop und Observability des HTTP-Transports.
-   * Woher: Aus dem zentralen Runtime-Container.
-   * Wo: In der Phase-2-HTTP-Infrastruktur.
-   * Soll-Ergebnis: Ein vorbereiteter, aber noch nicht lauschender Loopback-Server.
-   *
    * @param options Validierte lokale Transport-, Client- und Observability-Abhängigkeiten.
    */
   public constructor(private readonly options: LoopbackHttpServerOptions) {}
 
   /**
    * Liefert den tatsächlich gebundenen lokalen MCP-Endpunkt, sofern der Server läuft.
-   *
-   * Was: Liest die von Node aufgelöste Listeneradresse einschließlich eines optional dynamisch vergebenen Testports.
-   * Warum: Runtime-Tests dürfen keine Portannahmen treffen und müssen dennoch den realen Loopback-Listener ansprechen.
-   * Wofür: Für lokale Betriebsdiagnosen und deterministische HTTP-Transporttests.
-   * Woher: Aus `node:http` nach erfolgreichem `listen`.
-   * Wo: An der beobachtbaren Grenze des HTTP-Runtime-Moduls.
-   * Soll-Ergebnis: Eine lokale `/mcp`-URL oder `undefined`, wenn kein Listener aktiv ist.
    *
    * @returns Vollständige lokale MCP-Endpoint-URL oder `undefined`.
    */
@@ -118,13 +104,6 @@ export class LoopbackMcpHttpServer {
   /**
    * Liefert den lokalen Gitea-Webhook-Endpunkt nur bei aktivierter HMAC-Receiver-Konfiguration.
    *
-   * Was: Leitet den dynamisch gebundenen Port in den festen Webhook-Routenpfad über.
-   * Warum: Ein Hook darf erst nach expliziter Secret-Konfiguration und HTTP-Start konfiguriert werden.
-   * Wofür: Für sichere lokale Gitea-Hook-Registrierung und Runtime-Diagnose.
-   * Woher: Aus der Node-Listeneradresse und den Runtime-Optionen.
-   * Wo: An der HTTP-Runtime-Grenze.
-   * Soll-Ergebnis: Lokale Webhook-URL oder `undefined`, wenn der Receiver deaktiviert ist.
-   *
    * @returns Vollständige lokale Webhook-URL oder `undefined`.
    */
   public get webhookEndpoint(): string | undefined {
@@ -138,13 +117,6 @@ export class LoopbackMcpHttpServer {
 
   /**
    * Startet den zustandslosen MCP-v2-Handler ausschließlich an 127.0.0.1.
-   *
-   * Was: Baut die per Request frische MCP-Server-Factory auf und bindet den Node-Listener an Loopback.
-   * Warum: Local-first-Betrieb braucht einen expliziten und nicht versehentlich externen Netzwerkendpunkt.
-   * Wofür: Für Streamable HTTP unter `http://127.0.0.1:<port>/mcp`.
-   * Woher: Aus der validierten `MCP_HTTP_PORT`-Konfiguration.
-   * Wo: Beim kontrollierten Runtime-Start.
-   * Soll-Ergebnis: Ein aktiver HTTP-Listener mit Host-, Origin-, Methoden- und Routenprüfung.
    *
    * @throws {Error} Wenn der Server bereits gestartet ist oder der Port nicht gebunden werden kann.
    */
@@ -177,13 +149,20 @@ export class LoopbackMcpHttpServer {
 
       const isMcpRoute = path === "/mcp";
       const isWebhookRoute = path === "/webhooks/gitea" && this.options.webhookReceiver !== undefined;
-      if (!isMcpRoute && !isWebhookRoute) {
+      const isHealthRoute = path === "/health";
+      const isReadyRoute = path === "/ready";
+      const isVersionRoute = path === "/version";
+      if (!isMcpRoute && !isWebhookRoute && !isHealthRoute && !isReadyRoute && !isVersionRoute) {
         this.options.eventBus.publish("http.request.rejected", "warn", {
           reason: "route_not_found",
           method: request.method ?? "UNKNOWN",
           path,
         });
-        writeJsonError(response, 404, "Nur /mcp und ein ausdrücklich aktivierter lokaler Gitea-Webhook sind verfügbar.");
+        writeJsonError(
+          response,
+          404,
+          "Nur /mcp, /health, /ready, /version und ein ausdrücklich aktivierter lokaler Gitea-Webhook sind verfügbar.",
+        );
         return;
       }
 
@@ -193,6 +172,23 @@ export class LoopbackMcpHttpServer {
           method: request.method ?? "UNKNOWN",
           path,
         });
+        return;
+      }
+
+      if (isHealthRoute || isReadyRoute || isVersionRoute) {
+        if (request.method !== "GET") {
+          writeJsonError(response, 405, "Für /health, /ready und /version ist nur GET erlaubt.");
+          return;
+        }
+        if (isVersionRoute) {
+          writeJsonSuccess(response, 200, buildVersionPayload());
+          return;
+        }
+        if (isHealthRoute) {
+          writeJsonSuccess(response, 200, buildHealthPayload());
+          return;
+        }
+        writeJsonSuccess(response, 200, buildReadyPayload(countConfiguredTools(this.options.phase3Services)));
         return;
       }
 
@@ -260,13 +256,6 @@ export class LoopbackMcpHttpServer {
 
   /**
    * Stoppt den Listener und schließt alle im MCP-Handler laufenden Exchanges.
-   *
-   * Was: Schließt zuerst den SDK-Handler und anschließend den Node-HTTP-Server.
-   * Warum: Ein kontrollierter Shutdown darf keine offenen MCP-Exchanges oder Listener hinterlassen.
-   * Wofür: Für Signalbehandlung, Tests und geordnete Prozessbeendigung.
-   * Woher: Aus der Runtime-Shutdown-Orchestrierung.
-   * Wo: Am Ende des HTTP-Betriebs.
-   * Soll-Ergebnis: Vollständig freigegebener Loopback-Port und nachvollziehbares Stop-Ereignis.
    */
   public async stop(): Promise<void> {
     const handler = this.handler;
