@@ -1,0 +1,10 @@
+{
+  "name": "dbzs-gitea-mcp-service-helper",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Installer-interner Helfer: registriert/entfernt den DBZS Gitea MCP HTTP-Loopback-Transport als Windows-Dienst.",
+  "dependencies": {
+    "node-windows": "^1.0.0-beta.8"
+  }
+}
