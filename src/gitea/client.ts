@@ -14,6 +14,20 @@ import { DbzsError, GiteaApiError } from "../core/errors.js";
 export type FetchFunction = (input: URL | string, init?: RequestInit) => Promise<Response>;
 
 /**
+ * Beschreibt die kontrollierten Optionen eines Gitea-HTTP-Requests.
+ */
+interface GiteaRequestOptions {
+  /** HTTP-Methode der unterstützten Phase-1- und Phase-2-Operationen. */
+  readonly method?: "GET" | "POST";
+  /** Optionaler Query-Parameterbestand ohne undefinierte Werte. */
+  readonly query?: Record<string, string | number | boolean | undefined>;
+  /** Optionaler JSON-Body für mutierende Actions-Aufrufe. */
+  readonly body?: Record<string, unknown>;
+  /** Erwarteter Accept-Wert für JSON- oder Textantworten. */
+  readonly accept?: string;
+}
+
+/**
  * Repräsentiert ein minimales Gitea-Repository mit bewahrten Zusatzfeldern.
  */
 export interface GiteaRepository {
@@ -70,12 +84,102 @@ export interface GiteaWorkflowRun {
 }
 
 /**
+ * Repräsentiert einen Repository-Branch einschließlich seines aktuellen Commits.
+ */
+export interface GiteaBranch {
+  readonly name: string;
+  readonly commit?: { readonly id?: string; readonly message?: string; readonly timestamp?: string };
+  readonly protected?: boolean;
+  readonly user_can_push?: boolean;
+  readonly user_can_merge?: boolean;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Repräsentiert einen Commit aus der Gitea-Repository-API.
+ */
+export interface GiteaCommit {
+  readonly sha: string;
+  readonly html_url?: string;
+  readonly commit?: { readonly message?: string; readonly author?: Record<string, unknown>; readonly committer?: Record<string, unknown> };
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Repräsentiert einen Pull Request aus der Gitea-Repository-API.
+ */
+export interface GiteaPullRequest {
+  readonly id: number;
+  readonly number: number;
+  readonly title: string;
+  readonly state: string;
+  readonly merged?: boolean;
+  readonly draft?: boolean;
+  readonly html_url?: string;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Repräsentiert ein Issue aus der Gitea-Repository-API.
+ */
+export interface GiteaIssue {
+  readonly id: number;
+  readonly number: number;
+  readonly title: string;
+  readonly state: string;
+  readonly html_url?: string;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Repräsentiert einen einzelnen Job eines Gitea-Actions-Workflow-Runs.
+ */
+export interface GiteaWorkflowJob {
+  readonly id: number;
+  readonly name?: string;
+  readonly status?: string;
+  readonly conclusion?: string;
+  readonly started_at?: string;
+  readonly completed_at?: string;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Repräsentiert einen für ein Repository sichtbaren Gitea-Actions-Runner.
+ */
+export interface GiteaRunner {
+  readonly id: number;
+  readonly name?: string;
+  readonly status?: string;
+  readonly labels?: string[];
+  readonly last_active?: string;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Repräsentiert ein Actions-Artifact einschließlich seiner sicheren Metadaten.
+ */
+export interface GiteaArtifact {
+  readonly id: number;
+  readonly name: string;
+  readonly size_in_bytes?: number;
+  readonly expired?: boolean;
+  readonly archive_download_url?: string;
+  readonly created_at?: string;
+  readonly expires_at?: string;
+  readonly [key: string]: unknown;
+}
+
+/**
  * Beschreibt die paginierte Rückgabeform der Actions-Listenendpunkte.
  */
 export interface GiteaListResponse<T> {
   readonly total_count?: number;
   readonly workflows?: T[];
   readonly workflow_runs?: T[];
+  readonly jobs?: T[];
+  readonly runners?: T[];
+  readonly artifacts?: T[];
   readonly [key: string]: unknown;
 }
 
@@ -318,6 +422,383 @@ export class GiteaClient {
   }
 
   /**
+   * Listet Branches eines freigegebenen Repositories mit Gitea-Paginierung.
+   *
+   * Was: Ruft die Branch-Liste des Repositorys ab.
+   * Warum: Branch- und Schutzinformationen sind für lokale Entwicklungsentscheidungen erforderlich.
+   * Wofür: Für das schreibgeschützte Tool gitea_list_branches.
+   * Woher: Aus GET /repos/{owner}/{repo}/branches der Gitea-REST-API.
+   * Wo: Im Repository-Read-Service.
+   * Soll-Ergebnis: Ausschließlich Branch-Daten des erlaubten Owners.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param page Angefragte 1-basierte Seite.
+   * @param limit Maximale Anzahl von Branches.
+   * @returns Branch-Liste von Gitea.
+   */
+  public async listBranches(owner: string, repositoryName: string, page: number, limit: number): Promise<GiteaBranch[]> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaBranch[]>(`${this.repositoryPath(owner, repositoryName)}/branches`, { query: { page, limit } });
+  }
+
+  /**
+   * Liest einen einzelnen Branch eines freigegebenen Repositories.
+   *
+   * Was: Ruft den Branch-Endpunkt für einen exakt kodierten Branch-Namen ab.
+   * Warum: Detaillierte Branch- und Schutzinformationen müssen gezielt abrufbar sein.
+   * Wofür: Für das schreibgeschützte Tool gitea_get_branch.
+   * Woher: Aus GET /repos/{owner}/{repo}/branches/{branch} der Gitea-REST-API.
+   * Wo: Im Repository-Read-Service.
+   * Soll-Ergebnis: Sicherer Zugriff ohne Fremdnamespace oder Pfadinjektion.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param branchName Name des Branches.
+   * @returns Branch-Details von Gitea.
+   */
+  public async getBranch(owner: string, repositoryName: string, branchName: string): Promise<GiteaBranch> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaBranch>(
+      `${this.repositoryPath(owner, repositoryName)}/branches/${encodeURIComponent(branchName)}`,
+    );
+  }
+
+  /**
+   * Listet Commits eines freigegebenen Repositories mit optionalem Ref- und Pfadfilter.
+   *
+   * Was: Ruft die paginierte Commit-Liste ab.
+   * Warum: Änderungen müssen ohne lokalen Git-Checkout nachvollziehbar sein.
+   * Wofür: Für das schreibgeschützte Tool gitea_list_commits.
+   * Woher: Aus GET /repos/{owner}/{repo}/commits der Gitea-REST-API.
+   * Wo: Im Repository-Read-Service.
+   * Soll-Ergebnis: Gefilterte Commit-Metadaten innerhalb des erlaubten Owners.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param page Angefragte 1-basierte Seite.
+   * @param limit Maximale Anzahl von Commits.
+   * @param sha Optionale Branch- oder SHA-Referenz.
+   * @param path Optionaler repositoryrelativer Pfadfilter.
+   * @returns Commit-Liste von Gitea.
+   */
+  public async listCommits(
+    owner: string,
+    repositoryName: string,
+    page: number,
+    limit: number,
+    sha?: string,
+    path?: string,
+  ): Promise<GiteaCommit[]> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaCommit[]>(`${this.repositoryPath(owner, repositoryName)}/commits`, {
+      query: { page, limit, sha, path, stat: false, verification: true, files: false },
+    });
+  }
+
+  /**
+   * Liest Commit-Details ohne ungebremste Dateiliste und Diff-Statistik.
+   *
+   * Was: Ruft einen einzelnen Commit über SHA oder Git-Referenz ab.
+   * Warum: Große Commit-Antworten müssen standardmäßig begrenzt bleiben.
+   * Wofür: Für das schreibgeschützte Tool gitea_get_commit.
+   * Woher: Aus GET /repos/{owner}/{repo}/git/commits/{sha} der Gitea-REST-API.
+   * Wo: Im Repository-Read-Service.
+   * Soll-Ergebnis: Commit-Metadaten ohne unnötig große Nutzlast.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param sha SHA oder Git-Referenz.
+   * @returns Commit-Details von Gitea.
+   */
+  public async getCommit(owner: string, repositoryName: string, sha: string): Promise<GiteaCommit> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaCommit>(
+      `${this.repositoryPath(owner, repositoryName)}/git/commits/${encodeURIComponent(sha)}`,
+      { query: { stat: false, verification: true, files: false } },
+    );
+  }
+
+  /**
+   * Listet Pull Requests eines freigegebenen Repositories.
+   *
+   * Was: Ruft die paginierte Pull-Request-Liste mit State- und Base-Branch-Filter ab.
+   * Warum: Code-Review-Status soll ohne mutierende Operationen sichtbar sein.
+   * Wofür: Für das schreibgeschützte Tool gitea_list_pull_requests.
+   * Woher: Aus GET /repos/{owner}/{repo}/pulls der Gitea-REST-API.
+   * Wo: Im Collaboration-Read-Service.
+   * Soll-Ergebnis: Pull-Request-Daten nur für den erlaubten Namespace.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param page Angefragte 1-basierte Seite.
+   * @param limit Maximale Anzahl von Pull Requests.
+   * @param state Gewünschter State: open, closed oder all.
+   * @param baseBranch Optionaler Zielbranchfilter.
+   * @returns Pull-Request-Liste von Gitea.
+   */
+  public async listPullRequests(
+    owner: string,
+    repositoryName: string,
+    page: number,
+    limit: number,
+    state: "open" | "closed" | "all",
+    baseBranch?: string,
+  ): Promise<GiteaPullRequest[]> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaPullRequest[]>(`${this.repositoryPath(owner, repositoryName)}/pulls`, {
+      query: { page, limit, state, base_branch: baseBranch },
+    });
+  }
+
+  /**
+   * Liest die Details eines Pull Requests eines freigegebenen Repositories.
+   *
+   * Was: Ruft einen Pull Request über seine positive Repository-Indexnummer ab.
+   * Warum: Detaildaten müssen getrennt von der paginierten Übersicht zugänglich sein.
+   * Wofür: Für das schreibgeschützte Tool gitea_get_pull_request.
+   * Woher: Aus GET /repos/{owner}/{repo}/pulls/{index} der Gitea-REST-API.
+   * Wo: Im Collaboration-Read-Service.
+   * Soll-Ergebnis: Pull-Request-Details ohne Mutation.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param pullRequestIndex Repository-lokale Pull-Request-Indexnummer.
+   * @returns Pull-Request-Details von Gitea.
+   */
+  public async getPullRequest(
+    owner: string,
+    repositoryName: string,
+    pullRequestIndex: number,
+  ): Promise<GiteaPullRequest> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaPullRequest>(
+      `${this.repositoryPath(owner, repositoryName)}/pulls/${encodeURIComponent(String(pullRequestIndex))}`,
+    );
+  }
+
+  /**
+   * Listet Issues eines freigegebenen Repositories und schließt Pull Requests aus.
+   *
+   * Was: Ruft die paginierte Issue-Liste mit State- und Volltextfilter ab.
+   * Warum: Aufgaben und Defekte müssen separat von Pull Requests sichtbar bleiben.
+   * Wofür: Für das schreibgeschützte Tool gitea_list_issues.
+   * Woher: Aus GET /repos/{owner}/{repo}/issues der Gitea-REST-API.
+   * Wo: Im Collaboration-Read-Service.
+   * Soll-Ergebnis: Ausschließlich reguläre Issues im erlaubten Namespace.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param page Angefragte 1-basierte Seite.
+   * @param limit Maximale Anzahl von Issues.
+   * @param state Gewünschter State: open, closed oder all.
+   * @param query Optionaler Gitea-Volltextfilter.
+   * @returns Issue-Liste von Gitea.
+   */
+  public async listIssues(
+    owner: string,
+    repositoryName: string,
+    page: number,
+    limit: number,
+    state: "open" | "closed" | "all",
+    query?: string,
+  ): Promise<GiteaIssue[]> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaIssue[]>(`${this.repositoryPath(owner, repositoryName)}/issues`, {
+      query: { page, limit, state, q: query, type: "issues" },
+    });
+  }
+
+  /**
+   * Liest die Details eines Issues eines freigegebenen Repositories.
+   *
+   * Was: Ruft ein Issue über seine positive Repository-Indexnummer ab.
+   * Warum: Detaildaten müssen ohne Suchantwort oder Mutation abrufbar sein.
+   * Wofür: Für das schreibgeschützte Tool gitea_get_issue.
+   * Woher: Aus GET /repos/{owner}/{repo}/issues/{index} der Gitea-REST-API.
+   * Wo: Im Collaboration-Read-Service.
+   * Soll-Ergebnis: Issue-Details nur im erlaubten Namespace.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param issueIndex Repository-lokale Issue-Indexnummer.
+   * @returns Issue-Details von Gitea.
+   */
+  public async getIssue(owner: string, repositoryName: string, issueIndex: number): Promise<GiteaIssue> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaIssue>(
+      `${this.repositoryPath(owner, repositoryName)}/issues/${encodeURIComponent(String(issueIndex))}`,
+    );
+  }
+
+  /**
+   * Listet Jobs eines Workflow-Runs eines freigegebenen Repositories.
+   *
+   * Was: Ruft die paginierte Job-Liste eines Actions-Runs ab.
+   * Warum: Der Run-Status allein enthält keine Ausführungsdetails pro Job.
+   * Wofür: Für das schreibgeschützte Tool gitea_list_workflow_jobs.
+   * Woher: Aus GET /repos/{owner}/{repo}/actions/runs/{run}/jobs der Gitea-Actions-API.
+   * Wo: Im Actions-Read-Service.
+   * Soll-Ergebnis: Jobstatus und Schrittmetadaten des erlaubten Repository-Runs.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param runId Numerische Workflow-Run-ID.
+   * @param page Angefragte 1-basierte Seite.
+   * @param limit Maximale Anzahl von Jobs.
+   * @returns Paginierte Job-Antwort von Gitea.
+   */
+  public async listWorkflowJobs(
+    owner: string,
+    repositoryName: string,
+    runId: number,
+    page: number,
+    limit: number,
+  ): Promise<GiteaListResponse<GiteaWorkflowJob>> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaListResponse<GiteaWorkflowJob>>(
+      `${this.repositoryPath(owner, repositoryName)}/actions/runs/${encodeURIComponent(String(runId))}/jobs`,
+      { query: { page, limit } },
+    );
+  }
+
+  /**
+   * Liest Job-Logs mit einer expliziten, lokal erzwungenen Zeichenbegrenzung.
+   *
+   * Was: Lädt Textlogs eines Actions-Jobs und liefert nur den angeforderten Präfix zurück.
+   * Warum: Unbegrenzte Logantworten könnten MCP-Clients und Speicher unnötig belasten.
+   * Wofür: Für das schreibgeschützte Tool gitea_get_workflow_job_log.
+   * Woher: Aus GET /repos/{owner}/{repo}/actions/jobs/{job}/logs der Gitea-Actions-API.
+   * Wo: Im Actions-Read-Service.
+   * Soll-Ergebnis: Nachvollziehbare Logs mit transparenter Trunkierungsmarkierung.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param jobId Numerische Actions-Job-ID.
+   * @param maxCharacters Höchstzahl zurückgegebener Zeichen.
+   * @returns Logtext inklusive Metadaten zur Trunkierung.
+   */
+  public async getWorkflowJobLog(
+    owner: string,
+    repositoryName: string,
+    jobId: number,
+    maxCharacters: number,
+  ): Promise<{ readonly jobId: number; readonly content: string; readonly truncated: boolean }> {
+    this.assertAllowedOwner(owner);
+    const content = await this.requestText(
+      `${this.repositoryPath(owner, repositoryName)}/actions/jobs/${encodeURIComponent(String(jobId))}/logs`,
+    );
+    return {
+      jobId,
+      content: content.slice(0, maxCharacters),
+      truncated: content.length > maxCharacters,
+    };
+  }
+
+  /**
+   * Listet die für ein freigegebenes Repository sichtbaren Actions-Runner.
+   *
+   * Was: Ruft die paginierte Runner-Liste ab.
+   * Warum: CI-Ausführbarkeit und Kapazität sollen ohne Admin-Token sichtbar sein.
+   * Wofür: Für das schreibgeschützte Tool gitea_list_runners.
+   * Woher: Aus GET /repos/{owner}/{repo}/actions/runners der Gitea-Actions-API.
+   * Wo: Im Actions-Read-Service.
+   * Soll-Ergebnis: Runner-Status ausschließlich im freigegebenen Namespace.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param page Angefragte 1-basierte Seite.
+   * @param limit Maximale Anzahl von Runnern.
+   * @returns Paginierte Runner-Antwort von Gitea.
+   */
+  public async listRunners(
+    owner: string,
+    repositoryName: string,
+    page: number,
+    limit: number,
+  ): Promise<GiteaListResponse<GiteaRunner>> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaListResponse<GiteaRunner>>(
+      `${this.repositoryPath(owner, repositoryName)}/actions/runners`,
+      { query: { page, limit } },
+    );
+  }
+
+  /**
+   * Liest die Details eines Actions-Runners eines freigegebenen Repositories.
+   *
+   * Was: Ruft einen Runner über seine numerische ID ab.
+   * Warum: Status- und Labeldaten einzelner Runner müssen gezielt prüfbar sein.
+   * Wofür: Für das schreibgeschützte Tool gitea_get_runner.
+   * Woher: Aus GET /repos/{owner}/{repo}/actions/runners/{runner_id} der Gitea-Actions-API.
+   * Wo: Im Actions-Read-Service.
+   * Soll-Ergebnis: Runner-Details ohne Admin- oder Mutationszugriff.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param runnerId Numerische Runner-ID.
+   * @returns Runner-Details von Gitea.
+   */
+  public async getRunner(owner: string, repositoryName: string, runnerId: number): Promise<GiteaRunner> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaRunner>(
+      `${this.repositoryPath(owner, repositoryName)}/actions/runners/${encodeURIComponent(String(runnerId))}`,
+    );
+  }
+
+  /**
+   * Listet Artifacts eines Repositorys oder eines einzelnen Workflow-Runs.
+   *
+   * Was: Wählt abhängig von runId den Repository- oder Run-spezifischen Artifact-Endpunkt.
+   * Warum: Build-Ergebnisse sollen auffindbar bleiben, ohne Dateien unkontrolliert herunterzuladen.
+   * Wofür: Für das schreibgeschützte Tool gitea_list_artifacts.
+   * Woher: Aus den Gitea-Actions-Artifact-Endpunkten.
+   * Wo: Im Actions-Read-Service.
+   * Soll-Ergebnis: Artifact-Metadaten mit optionalem Run- und Namensfilter.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param runId Optionale Workflow-Run-ID.
+   * @param name Optionaler Artifact-Namensfilter.
+   * @returns Paginierte Artifact-Antwort von Gitea.
+   */
+  public async listArtifacts(
+    owner: string,
+    repositoryName: string,
+    runId?: number,
+    name?: string,
+  ): Promise<GiteaListResponse<GiteaArtifact>> {
+    this.assertAllowedOwner(owner);
+    const actionsPath = `${this.repositoryPath(owner, repositoryName)}/actions`;
+    const path = runId
+      ? `${actionsPath}/runs/${encodeURIComponent(String(runId))}/artifacts`
+      : `${actionsPath}/artifacts`;
+    return this.request<GiteaListResponse<GiteaArtifact>>(path, { query: { name } });
+  }
+
+  /**
+   * Liest die Metadaten eines einzelnen Actions-Artifacts ohne Download.
+   *
+   * Was: Ruft Artifact-Metadaten einschließlich Ablauf- und Download-URL ab.
+   * Warum: Der MCP-Server soll Binärdownloads nicht verdeckt in den Prozessspeicher laden.
+   * Wofür: Für das schreibgeschützte Tool gitea_get_artifact.
+   * Woher: Aus GET /repos/{owner}/{repo}/actions/artifacts/{artifact_id} der Gitea-Actions-API.
+   * Wo: Im Actions-Read-Service.
+   * Soll-Ergebnis: Transparente Artifact-Metadaten, keine Binärübertragung.
+   *
+   * @param owner Angefragter Owner.
+   * @param repositoryName Angefragter Repositoryname.
+   * @param artifactId Numerische Artifact-ID.
+   * @returns Artifact-Metadaten von Gitea.
+   */
+  public async getArtifact(owner: string, repositoryName: string, artifactId: number): Promise<GiteaArtifact> {
+    this.assertAllowedOwner(owner);
+    return this.request<GiteaArtifact>(
+      `${this.repositoryPath(owner, repositoryName)}/actions/artifacts/${encodeURIComponent(String(artifactId))}`,
+    );
+  }
+
+  /**
    * Erzwingt den einen erlaubten Owner vor jeder repositorybezogenen Operation.
    *
    * Was: Vergleicht angeforderten und konfigurierten Namespace.
@@ -372,14 +853,57 @@ export class GiteaClient {
    * @param options HTTP-Methode, Query-Parameter und JSON-Body.
    * @returns Typisierte JSON-Antwort oder ein leeres Objekt für No-Content-Antworten.
    */
-  private async request<T>(
-    path: string,
-    options: {
-      readonly method?: "GET" | "POST";
-      readonly query?: Record<string, string | number | boolean | undefined>;
-      readonly body?: Record<string, unknown>;
-    } = {},
-  ): Promise<T> {
+  private async request<T>(path: string, options: GiteaRequestOptions = {}): Promise<T> {
+    const response = await this.requestResponse(path, options);
+    if (response.status === 204) {
+      return {} as T;
+    }
+
+    try {
+      return (await response.json()) as T;
+    } catch {
+      throw new DbzsError("GITEA_PROTOCOL_ERROR", "Gitea hat eine nicht lesbare JSON-Antwort geliefert.", {
+        method: options.method ?? "GET",
+        path,
+        status: response.status,
+      });
+    }
+  }
+
+  /**
+   * Führt einen Gitea-Request aus und liefert eine Textantwort mit unveränderter Fehlersemantik.
+   *
+   * Was: Ruft den zentralen HTTP-Pfad auf und liest danach den Response-Text.
+   * Warum: Job-Logs sind Text und dürfen weder als JSON fehlinterpretiert noch ohne Auditpfad abgerufen werden.
+   * Wofür: Für die begrenzte Actions-Logabfrage in Phase 2.
+   * Woher: Aus der Gitea-Actions-Job-Log-API.
+   * Wo: Im Gitea-Adapter oberhalb des gemeinsamen Request-Transports.
+   * Soll-Ergebnis: Textlogs mit denselben Headern, Richtlinien und Events wie JSON-Antworten.
+   *
+   * @param path Relativer /api/v1-Pfad.
+   * @param options Kontrollierte Request-Optionen.
+   * @returns Vollständige Textantwort vor lokaler Trunkierung.
+   */
+  private async requestText(path: string, options: GiteaRequestOptions = {}): Promise<string> {
+    const response = await this.requestResponse(path, { ...options, accept: options.accept ?? "text/plain, */*" });
+    return response.text();
+  }
+
+  /**
+   * Führt den gemeinsamen authentifizierten und beobachtbaren Gitea-HTTP-Request aus.
+   *
+   * Was: Baut URL und Header, ruft fetch auf, protokolliert den Prozess und normalisiert HTTP-Fehler.
+   * Warum: JSON- und Textendpunkte müssen dieselben Token-, Policy- und Observability-Garantien erhalten.
+   * Wofür: Für alle Read- und Write-Methoden dieses Clients.
+   * Woher: Aus den öffentlichen Gitea-REST-API-Endpunkten.
+   * Wo: Zentral im Gitea-Adapter.
+   * Soll-Ergebnis: Eine erfolgreiche Response oder ein strukturierter, sicherer Fehler.
+   *
+   * @param path Relativer /api/v1-Pfad.
+   * @param options HTTP-Methode, Query-Parameter, JSON-Body und Accept-Wert.
+   * @returns Erfolgreiche Fetch-Response zur formatspezifischen Weiterverarbeitung.
+   */
+  private async requestResponse(path: string, options: GiteaRequestOptions = {}): Promise<Response> {
     const method = options.method ?? "GET";
     const requestUrl = new URL(`${this.baseUrl}/api/v1${path}`);
 
@@ -397,7 +921,7 @@ export class GiteaClient {
       response = await this.fetchFunction(requestUrl, {
         method,
         headers: {
-          Accept: "application/json",
+          Accept: options.accept ?? "application/json",
           Authorization: `token ${this.token}`,
           ...(options.body ? { "Content-Type": "application/json" } : {}),
         },
@@ -436,20 +960,7 @@ export class GiteaClient {
       status: response.status,
       durationMs,
     });
-
-    if (response.status === 204) {
-      return {} as T;
-    }
-
-    try {
-      return (await response.json()) as T;
-    } catch {
-      throw new DbzsError("GITEA_PROTOCOL_ERROR", "Gitea hat eine nicht lesbare JSON-Antwort geliefert.", {
-        method,
-        path,
-        status: response.status,
-      });
-    }
+    return response;
   }
 
   /**

@@ -1,6 +1,6 @@
 {
   "name": "dbzs-gitea-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "DBZS Gitea MCP Server mit stdio-Transport und policy-geschützter Gitea REST API Integration.",
@@ -12,9 +12,10 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/test/gitea-client.test.js"
+    "test": "npm run build && node --test dist/test/*.test.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "zod": "^4.0.0"
   },

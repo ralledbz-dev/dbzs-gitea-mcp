@@ -230,6 +230,204 @@ export function createMcpServer(giteaClient: GiteaClient, eventBus: DbzsEventBus
       executeTool(eventBus, "gitea_rerun_workflow", () => giteaClient.rerunWorkflow(owner, repo, runId)),
   );
 
-  eventBus.publish("mcp.server.tools_registered", "info", { toolCount: 7 });
+  const stateSchema = z.enum(["open", "closed", "all"]);
+  const positiveIdSchema = z.number().int().positive();
+
+  server.registerTool(
+    "gitea_list_branches",
+    {
+      title: "Gitea-Branches auflisten",
+      description: "Liest Branches einschließlich Schutz- und Head-Commit-Metadaten eines Repositories im freigegebenen Namespace.",
+      inputSchema: z.object({ owner: ownerSchema, repo: repositorySchema, page: paginationSchema.default(1), limit: paginationSchema.default(30) }),
+    },
+    async ({ owner, repo, page, limit }) =>
+      executeTool(eventBus, "gitea_list_branches", () => giteaClient.listBranches(owner, repo, page, limit)),
+  );
+
+  server.registerTool(
+    "gitea_get_branch",
+    {
+      title: "Gitea-Branch lesen",
+      description: "Liest die Details eines einzelnen Branches im freigegebenen Namespace.",
+      inputSchema: z.object({ owner: ownerSchema, repo: repositorySchema, branch: z.string().trim().min(1).max(500) }),
+    },
+    async ({ owner, repo, branch }) =>
+      executeTool(eventBus, "gitea_get_branch", () => giteaClient.getBranch(owner, repo, branch)),
+  );
+
+  server.registerTool(
+    "gitea_list_commits",
+    {
+      title: "Gitea-Commits auflisten",
+      description: "Liest Commits eines Repositories; ref und path können die Liste eingrenzen. Große Diff- und Dateilisten werden nicht angefordert.",
+      inputSchema: z.object({
+        owner: ownerSchema,
+        repo: repositorySchema,
+        page: paginationSchema.default(1),
+        limit: paginationSchema.default(30),
+        ref: z.string().trim().min(1).max(500).optional(),
+        path: z.string().trim().min(1).max(4096).optional(),
+      }),
+    },
+    async ({ owner, repo, page, limit, ref, path }) =>
+      executeTool(eventBus, "gitea_list_commits", () => giteaClient.listCommits(owner, repo, page, limit, ref, path)),
+  );
+
+  server.registerTool(
+    "gitea_get_commit",
+    {
+      title: "Gitea-Commit lesen",
+      description: "Liest Metadaten eines einzelnen Commits oder einer Git-Referenz ohne ungebremste Diff- und Dateilisten.",
+      inputSchema: z.object({ owner: ownerSchema, repo: repositorySchema, sha: z.string().trim().min(1).max(500) }),
+    },
+    async ({ owner, repo, sha }) =>
+      executeTool(eventBus, "gitea_get_commit", () => giteaClient.getCommit(owner, repo, sha)),
+  );
+
+  server.registerTool(
+    "gitea_list_pull_requests",
+    {
+      title: "Gitea-Pull-Requests auflisten",
+      description: "Liest Pull Requests eines Repositories mit Status- und optionalem Zielbranchfilter. Die Operation ist schreibgeschützt.",
+      inputSchema: z.object({
+        owner: ownerSchema,
+        repo: repositorySchema,
+        state: stateSchema.default("open"),
+        baseBranch: z.string().trim().min(1).max(500).optional(),
+        page: paginationSchema.default(1),
+        limit: paginationSchema.default(30),
+      }),
+    },
+    async ({ owner, repo, state, baseBranch, page, limit }) =>
+      executeTool(eventBus, "gitea_list_pull_requests", () =>
+        giteaClient.listPullRequests(owner, repo, page, limit, state, baseBranch),
+      ),
+  );
+
+  server.registerTool(
+    "gitea_get_pull_request",
+    {
+      title: "Gitea-Pull-Request lesen",
+      description: "Liest Details eines einzelnen Pull Requests anhand seiner Repository-Indexnummer.",
+      inputSchema: z.object({ owner: ownerSchema, repo: repositorySchema, index: positiveIdSchema }),
+    },
+    async ({ owner, repo, index }) =>
+      executeTool(eventBus, "gitea_get_pull_request", () => giteaClient.getPullRequest(owner, repo, index)),
+  );
+
+  server.registerTool(
+    "gitea_list_issues",
+    {
+      title: "Gitea-Issues auflisten",
+      description: "Liest reguläre Issues, nicht Pull Requests, mit Status- und optionalem Volltextfilter. Die Operation ist schreibgeschützt.",
+      inputSchema: z.object({
+        owner: ownerSchema,
+        repo: repositorySchema,
+        state: stateSchema.default("open"),
+        query: z.string().trim().min(1).max(500).optional(),
+        page: paginationSchema.default(1),
+        limit: paginationSchema.default(30),
+      }),
+    },
+    async ({ owner, repo, state, query, page, limit }) =>
+      executeTool(eventBus, "gitea_list_issues", () => giteaClient.listIssues(owner, repo, page, limit, state, query)),
+  );
+
+  server.registerTool(
+    "gitea_get_issue",
+    {
+      title: "Gitea-Issue lesen",
+      description: "Liest Details eines einzelnen Issues anhand seiner Repository-Indexnummer.",
+      inputSchema: z.object({ owner: ownerSchema, repo: repositorySchema, index: positiveIdSchema }),
+    },
+    async ({ owner, repo, index }) =>
+      executeTool(eventBus, "gitea_get_issue", () => giteaClient.getIssue(owner, repo, index)),
+  );
+
+  server.registerTool(
+    "gitea_list_workflow_jobs",
+    {
+      title: "Gitea-Actions-Workflow-Jobs auflisten",
+      description: "Liest die Jobs eines Workflow-Runs einschließlich Status, Zeitstempeln und Schrittmetadaten.",
+      inputSchema: z.object({
+        owner: ownerSchema,
+        repo: repositorySchema,
+        runId: positiveIdSchema,
+        page: paginationSchema.default(1),
+        limit: paginationSchema.default(30),
+      }),
+    },
+    async ({ owner, repo, runId, page, limit }) =>
+      executeTool(eventBus, "gitea_list_workflow_jobs", () => giteaClient.listWorkflowJobs(owner, repo, runId, page, limit)),
+  );
+
+  server.registerTool(
+    "gitea_get_workflow_job_log",
+    {
+      title: "Gitea-Actions-Job-Log lesen",
+      description: "Liest das Log eines Workflow-Jobs als Text. maxCharacters begrenzt die Antwort lokal und meldet eine Trunkierung transparent.",
+      inputSchema: z.object({
+        owner: ownerSchema,
+        repo: repositorySchema,
+        jobId: positiveIdSchema,
+        maxCharacters: z.number().int().min(1_000).max(100_000).default(50_000),
+      }),
+    },
+    async ({ owner, repo, jobId, maxCharacters }) =>
+      executeTool(eventBus, "gitea_get_workflow_job_log", () =>
+        giteaClient.getWorkflowJobLog(owner, repo, jobId, maxCharacters),
+      ),
+  );
+
+  server.registerTool(
+    "gitea_list_runners",
+    {
+      title: "Gitea-Actions-Runner auflisten",
+      description: "Liest Status, Labels und Aktivitätsmetadaten der für ein Repository sichtbaren Actions-Runner.",
+      inputSchema: z.object({ owner: ownerSchema, repo: repositorySchema, page: paginationSchema.default(1), limit: paginationSchema.default(30) }),
+    },
+    async ({ owner, repo, page, limit }) =>
+      executeTool(eventBus, "gitea_list_runners", () => giteaClient.listRunners(owner, repo, page, limit)),
+  );
+
+  server.registerTool(
+    "gitea_get_runner",
+    {
+      title: "Gitea-Actions-Runner lesen",
+      description: "Liest Details eines einzelnen für das Repository sichtbaren Actions-Runners.",
+      inputSchema: z.object({ owner: ownerSchema, repo: repositorySchema, runnerId: positiveIdSchema }),
+    },
+    async ({ owner, repo, runnerId }) =>
+      executeTool(eventBus, "gitea_get_runner", () => giteaClient.getRunner(owner, repo, runnerId)),
+  );
+
+  server.registerTool(
+    "gitea_list_artifacts",
+    {
+      title: "Gitea-Actions-Artifacts auflisten",
+      description: "Liest Artifact-Metadaten eines Repositories oder eines Workflow-Runs. Es werden keine Binärdaten heruntergeladen.",
+      inputSchema: z.object({
+        owner: ownerSchema,
+        repo: repositorySchema,
+        runId: positiveIdSchema.optional(),
+        name: z.string().trim().min(1).max(500).optional(),
+      }),
+    },
+    async ({ owner, repo, runId, name }) =>
+      executeTool(eventBus, "gitea_list_artifacts", () => giteaClient.listArtifacts(owner, repo, runId, name)),
+  );
+
+  server.registerTool(
+    "gitea_get_artifact",
+    {
+      title: "Gitea-Actions-Artifact lesen",
+      description: "Liest Metadaten eines einzelnen Artifacts einschließlich einer von Gitea gelieferten Download-URL, ohne das Artifact herunterzuladen.",
+      inputSchema: z.object({ owner: ownerSchema, repo: repositorySchema, artifactId: positiveIdSchema }),
+    },
+    async ({ owner, repo, artifactId }) =>
+      executeTool(eventBus, "gitea_get_artifact", () => giteaClient.getArtifact(owner, repo, artifactId)),
+  );
+
+  eventBus.publish("mcp.server.tools_registered", "info", { toolCount: 21 });
   return server;
 }
