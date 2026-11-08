@@ -75,7 +75,7 @@ Ein lokaler MCP-Client kann den gebauten Server beispielsweise mit der folgenden
 
 Die Read-Tools führen keine Gitea-Mutation aus und tragen die Annotation `readOnlyHint: true`. Alle Write-Tools verlangen zwingend den Booleschen Parameter `confirm: true`; ohne diesen Parameter verwirft die Eingabevalidierung den Aufruf vor dem Gitea-Request, und sie tragen `destructiveHint: true`. Jede repositorybezogene Operation prüft den übergebenen `owner` gegen `GITEA_ALLOWED_OWNER`, bevor eine Netzwerkverbindung aufgebaut wird. Die Toolregistrierung ist nach Kategorie in `src/tools/*.ts` aufgeteilt (`src/tools/shared.ts` leitet die Annotationen mechanisch aus der `confirm`-Konvention ab).
 
-Insgesamt sind **26 Tools immer registriert**; bis zu 7 weitere Phase-3-Tools kommen hinzu, sobald die optionale lokale Webhook- oder Fleet-Commander-Integration konfiguriert ist.
+Insgesamt sind **26 Kern-Tools immer registriert**. Optional kommen 2 lokale Webhook-Tools, 5 Fleet-Commander-Tools und 9 lokale Workspace-Tools hinzu. Damit sind je nach Environment-Variablen maximal **42 Tools** registriert.
 
 ### Repositories und Inhalte (`src/tools/repositories.ts`)
 
@@ -198,7 +198,8 @@ Aktivierung ausschließlich über `DBZS_WORKSPACE_ROOT`, das auf einen existiere
 | `workspace_write_file` | Datei schreiben | `confirm: true` |
 | `workspace_git_status`, `workspace_git_diff`, `workspace_git_log` | Git-Status, Diff und Historie | Read-only |
 | `workspace_run_process` | Prozess ohne Shell starten | `confirm: true`, Executable-Allowlist |
-| `workspace_poll_process`, `workspace_stop_process` | Prozess überwachen/beenden | Stop erfordert `confirm: true` |
+| `workspace_poll_process` | Prozessstatus und begrenzte Ausgabe lesen | Read-only |
+| `workspace_stop_process` | Gestarteten Prozess beenden | `confirm: true` |
 
 Prozesse sind auf acht gleichzeitige Instanzen und 100.000 Zeichen Output begrenzt. Beendete Prozessdatensätze werden begrenzt aufbewahrt; beim Runtime-Shutdown werden laufende Kindprozesse beendet. Die erlaubten Executables werden über `DBZS_PROCESS_ALLOWLIST` gesetzt (Standard: git,node,npm,python,py,pwsh). **Wichtig:** `shell: false` verhindert Shell-String-Ausführung, ist aber keine Betriebssystem-Sandbox. Ein freigegebenes Programm kann weiterhin mit den Rechten des MCP-Benutzerkontos auf Dateien, Netzwerk und andere Ressourcen zugreifen. Für sensible Projekte sollte die Allowlist deshalb auf tatsächlich benötigte Programme reduziert werden. Der MCP-Prozess sollte unter einem normalen Windows-Benutzerkonto laufen.
 
