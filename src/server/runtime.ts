@@ -23,7 +23,7 @@ import type { Phase3Services } from "./mcp-server.js";
  * @param httpServer Gestartete lokale HTTP-Runtime.
  * @param eventBus Zentraler DBZS-EventBus.
  */
-function registerHttpShutdown(httpServer: LoopbackMcpHttpServer, eventBus: DbzsEventBus): void {
+function registerHttpShutdown(httpServer: LoopbackMcpHttpServer, eventBus: DbzsEventBus, localWorkspace?: LocalWorkspaceBridge): void {
   let stopping = false;
 
   const shutdown = (signal: "SIGINT" | "SIGTERM") => {
@@ -33,8 +33,7 @@ function registerHttpShutdown(httpServer: LoopbackMcpHttpServer, eventBus: DbzsE
 
     stopping = true;
     eventBus.publish("runtime.shutdown.started", "info", { transport: "http", signal });
-    void httpServer
-      .stop()
+    void Promise.all([httpServer.stop(), localWorkspace?.shutdown()])
       .then(() => {
         eventBus.publish("runtime.shutdown.completed", "info", { transport: "http", signal });
       })
@@ -106,6 +105,19 @@ export async function startServer(): Promise<void> {
   };
 
   if (configuration.transport === "stdio") {
+    let stopping = false;
+    const shutdown = (signal: "SIGINT" | "SIGTERM") => {
+      if (stopping) return;
+      stopping = true;
+      eventBus.publish("runtime.shutdown.started", "info", { transport: "stdio", signal });
+      void localWorkspace?.shutdown().then(() => eventBus.publish("runtime.shutdown.completed", "info", { transport: "stdio", signal })).catch((error: unknown) => {
+        const dbzsError = toDbzsError(error);
+        eventBus.publish("runtime.shutdown.failed", "error", { transport: "stdio", signal, errorCode: dbzsError.code, errorMessage: dbzsError.message });
+        process.exitCode = 1;
+      });
+    };
+    process.once("SIGINT", () => shutdown("SIGINT"));
+    process.once("SIGTERM", () => shutdown("SIGTERM"));
     await startStdioTransport(giteaClient, eventBus, phase3Services, configuration.allowedOwner);
     return;
   }
@@ -130,7 +142,7 @@ export async function startServer(): Promise<void> {
     port: configuration.httpPort,
   });
   await httpServer.start();
-  registerHttpShutdown(httpServer, eventBus);
+  registerHttpShutdown(httpServer, eventBus, localWorkspace);
   eventBus.publish("runtime.started", "info", {
     transport: "http",
     allowedOwner: configuration.allowedOwner,
