@@ -75,7 +75,7 @@ Ein lokaler MCP-Client kann den gebauten Server beispielsweise mit der folgenden
 
 Die Read-Tools führen keine Gitea-Mutation aus und tragen die Annotation `readOnlyHint: true`. Alle Write-Tools verlangen zwingend den Booleschen Parameter `confirm: true`; ohne diesen Parameter verwirft die Eingabevalidierung den Aufruf vor dem Gitea-Request, und sie tragen `destructiveHint: true`. Jede repositorybezogene Operation prüft den übergebenen `owner` gegen `GITEA_ALLOWED_OWNER`, bevor eine Netzwerkverbindung aufgebaut wird. Die Toolregistrierung ist nach Kategorie in `src/tools/*.ts` aufgeteilt (`src/tools/shared.ts` leitet die Annotationen mechanisch aus der `confirm`-Konvention ab).
 
-Insgesamt sind **26 Tools immer registriert**; bis zu 11 weitere Phase-3-Tools kommen hinzu, sobald die jeweilige optionale Integration konfiguriert ist (siehe unten).
+Insgesamt sind **26 Tools immer registriert**; bis zu 7 weitere Phase-3-Tools kommen hinzu, sobald die optionale lokale Webhook- oder Fleet-Commander-Integration konfiguriert ist.
 
 ### Repositories und Inhalte (`src/tools/repositories.ts`)
 
@@ -151,16 +151,6 @@ Die beiden optionalen Webhook-Tools erscheinen nur, wenn `GITEA_WEBHOOK_SECRET` 
 
 Erscheint nur, wenn `DBZS_FLEET_API_URL` gesetzt ist.
 
-### DBZS Feature Starter Integration (`src/tools/feature-starter.ts`, optional)
-
-| Tool | Kategorie | Zweck |
-| --- | --- | --- |
-| `dbzs_get_feature_starter_health` | Read | Liest die atomar publizierte `platform-health.json` |
-| `dbzs_check_feature_starter_updates` | Read | Prüft Updates über den bestehenden Feature-Starter-CLI-Vertrag |
-| `dbzs_apply_feature_starter_updates` | Write, `confirm: true` | Wendet Updates über Feature Starter an; zusätzlich `DBZS_FEATURE_STARTER_ALLOW_HOOKS=true` erforderlich |
-| `dbzs_run_feature_starter_install_all` | Write, `confirm: true` | Startet die Feature-Starter-Vollinstallation; zusätzlich `DBZS_FEATURE_STARTER_ALLOW_HOOKS=true` erforderlich |
-
-Die Health-Read erscheint bei gesetztem `DBZS_FEATURE_STARTER_HEALTH_PATH`, die drei Hook-Tools bei gesetztem `DBZS_FEATURE_STARTER_EXECUTABLE`.
 
 ## Betrieb, Fehlerbehandlung und Logs
 
@@ -169,7 +159,7 @@ Im HTTP-Modus (`MCP_TRANSPORT=http`) stellt der Server zusätzlich zu `/mcp` dre
 | Endpunkt | Methode | Antwort |
 | --- | --- | --- |
 | `/health` | GET | `{ "service": "dbzs-gitea-mcp", "status": "healthy" }`, sobald der Listener aktiv ist. Kein Fremdsystem-Aufruf. |
-| `/ready` | GET | `{ "service": "dbzs-gitea-mcp", "status": "ready", "version": "...", "tools": <Anzahl> }`, ebenfalls ohne Fremdsystem-Aufruf — geeignet für häufiges externes Polling (z. B. durch DBZS Feature Starter). |
+| `/ready` | GET | `{ "service": "dbzs-gitea-mcp", "status": "ready", "version": "...", "tools": <Anzahl> }`, ebenfalls ohne Fremdsystem-Aufruf — geeignet für häufiges lokales Prozessmonitoring. |
 | `/version` | GET | `{ "service": "dbzs-gitea-mcp", "version": "..." }`, identisch mit der in `tools/list` gemeldeten MCP-Protokollversion und `package.json`. |
 
 Der EventBus veröffentlicht relevante Runtime-, Policy-, MCP- und Gitea-Request-Ereignisse. Ein `StderrLogger` schreibt diese als einzelne JSON-Zeilen nach `stderr`. Dies gewährleistet, dass `stdout` ausschließlich dem MCP-stdio-Protokoll vorbehalten bleibt. Logs enthalten keine Tokenwerte. API-Fehler enthalten HTTP-Status, relativen API-Pfad und eine auf maximal 500 Zeichen begrenzte Gitea-Fehlermeldung.
@@ -187,7 +177,7 @@ Fehler werden nicht verschluckt. Eine abgelehnte Owner-Policy, fehlende Konfigur
 
 ## Geplanter Ausbau
 
-Phase 2 ergänzt einen auf `127.0.0.1` beschränkten Streamable-HTTP-Transport unter `/mcp` sowie Branches, Commits, Pull Requests, Issues, Workflow-Jobs und Logs, Runner-Status und Artifacts. Ein späterer LAN- oder Remote-Betrieb erfordert zusätzlich Authentifizierung, TLS, Origin-Prüfung und eine explizite Allowlist. Phase 3 umfasst Releases, Package Registry, Webhooks, Integrationen in Fleet Commander beziehungsweise Feature Starter sowie DBZS-Update- und Installer-Hooks.
+Phase 2 ergänzt einen auf `127.0.0.1` beschränkten Streamable-HTTP-Transport unter `/mcp` sowie Branches, Commits, Pull Requests, Issues, Workflow-Jobs und Logs, Runner-Status und Artifacts. Ein späterer LAN- oder Remote-Betrieb erfordert zusätzlich Authentifizierung, TLS, Origin-Prüfung und eine explizite Allowlist. Phase 3 umfasst Releases, Package Registry, Webhooks, die optionale Fleet-Commander-Integration.
 
 Zur Anbindung an ChatGPT/OpenAI über den OpenAI Secure MCP Tunnel siehe `docs/OPENAI_MCP_CONNECTION.md` — der Server ist dafür bereits vorbereitet (`/health`, `/ready`, `/version`, Tool-Annotationen); die eigentliche Tunnel-Einrichtung erfordert manuelle Schritte im OpenAI-Dashboard.
 
