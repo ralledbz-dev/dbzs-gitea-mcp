@@ -102,8 +102,7 @@ Die vollständige, praktische Tool-für-Tool-Testanleitung befindet sich in
 
 ## Warum kein Cloudflare/ngrok/öffentliches Forwarding
 
-Für DBZS bleibt die lokale Architektur `DBZS MCP 127.0.0.1:3939` + `OpenAI Secure MCP Tunnel` +
-`Feature Starter Lifecycle` die empfohlene Kombination: sie erhält die Local-First-Architektur und ermöglicht
+Für DBZS bleibt die lokale Architektur `DBZS MCP 127.0.0.1:3939` + `OpenAI Secure MCP Tunnel` die empfohlene Kombination: sie erhält die Local-First-Architektur und ermöglicht
 OpenAI-Zugriff, ohne den MCP-Server selbst öffentlich freizugeben.
 
 ## Quellen
@@ -111,3 +110,8 @@ OpenAI-Zugriff, ohne den MCP-Server selbst öffentlich freizugeben.
 - OpenAI Help Center: Developer mode and MCP apps in ChatGPT
 - OpenAI Developers: Secure MCP Tunnel
 - OpenAI Developers: Building MCP servers for plugins and API integrations
+
+
+## Lokale Workspace-Tools
+
+Die optionalen Workspace-Tools erscheinen nur bei gesetztem `DBZS_WORKSPACE_ROOT`. Der Root sollte genau den benötigten Projektordner umfassen, niemals eine gesamte Laufwerkswurzel. Prozessstarts benötigen zusätzlich `confirm: true` und eine Executable aus `DBZS_PROCESS_ALLOWLIST`; der HTTP-Listener bleibt ausschließlich auf Loopback.

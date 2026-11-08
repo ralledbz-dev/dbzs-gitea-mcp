@@ -20,7 +20,6 @@ import { countConfiguredTools } from "../../server/mcp-server.js";
 import { registerActionsTools } from "../../tools/actions.js";
 import { registerArtifactAndReleaseTools } from "../../tools/artifacts-releases.js";
 import { registerBranchAndCommitTools } from "../../tools/branches-commits.js";
-import { registerFeatureStarterTools } from "../../tools/feature-starter.js";
 import { registerFleetCommanderTools } from "../../tools/fleet-commander.js";
 import { registerPackageTools } from "../../tools/packages.js";
 import { registerPullRequestAndIssueTools } from "../../tools/pull-requests-issues.js";
@@ -29,8 +28,6 @@ import { registerWebhookTools } from "../../tools/webhooks.js";
 import { LoopbackMcpHttpServer } from "../../transports/http.js";
 import { GiteaWebhookReceiver } from "../../webhooks/gitea-webhook-receiver.js";
 import { LocalWebhookService } from "../../webhooks/local-webhook-service.js";
-import { FeatureStarterHealthReader } from "../../integrations/feature-starter-health-reader.js";
-import { FeatureStarterHook } from "../../integrations/feature-starter-hook.js";
 import { FleetCommanderClient } from "../../integrations/fleet-commander-client.js";
 
 /**
@@ -163,8 +160,7 @@ test("/health, /ready und /version liefern konsistente Betriebsdaten unter dense
  * exakt mit der Summe der tatsächlich von den `register*Tools`-Funktionen zurückgegebenen Toolanzahlen übereinstimmt.
  *
  * Warum dieser Test: `countConfiguredTools` pflegt eine eigene, feste Basiskonstante parallel zu den echten
- * Registrierungsfunktionen, damit /ready ohne wiederholte Serverkonstruktion bei häufigem externem Polling
- * auskommt (siehe server/mcp-server.ts). Dieser Test ist die einzige Absicherung gegen ein unbemerktes
+ * Registrierungsfunktionen, damit /ready ohne wiederholte Serverkonstruktion bei häufigem externem Polling auskommt (siehe server/mcp-server.ts). Dieser Test ist die einzige Absicherung gegen ein unbemerktes
  * Auseinanderlaufen beider Zahlen — genau die Art von Drift, die zuvor bei der MCP-Protokollversion auftrat.
  */
 test("countConfiguredTools stimmt für jede Phase-3-Kombination mit der tatsächlichen Registrierung überein", () => {
@@ -182,7 +178,6 @@ test("countConfiguredTools stimmt für jede Phase-3-Kombination mit der tatsäch
     total += registerPackageTools(server, giteaClient, eventBus);
     total += registerWebhookTools(server, giteaClient, eventBus, phase3?.localWebhook);
     total += registerFleetCommanderTools(server, eventBus, phase3?.fleetCommander);
-    total += registerFeatureStarterTools(server, eventBus, phase3?.featureStarterHealth, phase3?.featureStarterHook);
     return total;
   }
 
@@ -195,22 +190,11 @@ test("countConfiguredTools stimmt für jede Phase-3-Kombination mit der tatsäch
     eventBus,
   });
   const fleetCommander = new FleetCommanderClient({ baseUrl: "http://127.0.0.1:8110", eventBus });
-  const featureStarterHealth = new FeatureStarterHealthReader({
-    healthPath: "C:\\ProgramData\\DBZS\\CV5\\platform-health.json",
-    eventBus,
-  });
-  const featureStarterHook = new FeatureStarterHook({
-    executablePath: "C:\\Program Files\\DBZS\\DBZS.FeatureStarter.exe",
-    allowHooks: false,
-    eventBus,
-  });
 
   const combinations: Array<Parameters<typeof countConfiguredTools>[0]> = [
     {},
     { localWebhook },
     { fleetCommander },
-    { featureStarterHealth, featureStarterHook },
-    { localWebhook, fleetCommander, featureStarterHealth, featureStarterHook },
   ];
 
   for (const combination of combinations) {
@@ -231,7 +215,7 @@ test("countConfiguredTools stimmt für jede Phase-3-Kombination mit der tatsäch
  */
 test("Jede Toolregistrierung verwendet buildAnnotations passend zur eigenen confirm-Konvention", () => {
   const toolsDirectory = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "src", "tools");
-  const toolFiles = ["repositories.ts", "branches-commits.ts", "pull-requests-issues.ts", "actions.ts", "artifacts-releases.ts", "packages.ts", "webhooks.ts", "fleet-commander.ts", "feature-starter.ts"];
+  const toolFiles = ["repositories.ts", "branches-commits.ts", "pull-requests-issues.ts", "actions.ts", "artifacts-releases.ts", "packages.ts", "webhooks.ts", "fleet-commander.ts"];
 
   for (const fileName of toolFiles) {
     const source = readFileSync(join(toolsDirectory, fileName), "utf8");

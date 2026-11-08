@@ -18,8 +18,7 @@ export const SERVICE_NAME = "dbzs-gitea-mcp";
  *
  * Was: Löst den Projektwurzelpfad relativ zur kompilierten Datei auf und liest ausschließlich das Feld "version".
  * Warum: Ein statischer JSON-Import würde package.json (außerhalb von `rootDir: "src"`) in den TypeScript-Buildgraphen
- * ziehen und riskiert, den `dist/index.js`-Ausgabepfad zu verschieben, von dem Installer und Feature-Starter-Dienst
- * bereits abhängen. Ein Runtime-Read umgeht das vollständig.
+ * ziehen und riskiert, den `dist/index.js`-Ausgabepfad zu verschieben, dessen stabiler Ausgabepfad erhalten bleiben muss. Ein Runtime-Read umgeht das vollständig.
  * Wofür: Für `SERVICE_VERSION`.
  * Woher: Aus package.json im Projektwurzelverzeichnis, relativ zu `dist/health/probe.js` zur Laufzeit aufgelöst.
  * Wo: Einmalig beim Modul-Import.
@@ -63,7 +62,7 @@ export function buildVersionPayload(): { readonly service: string; readonly vers
  *
  * Was: Meldet ausschließlich, dass der Prozess läuft und der HTTP-Listener antwortet.
  * Warum: Ein reiner Liveness-Check darf keine Fremdsystem-Aufrufe auslösen und muss für häufiges Polling sicher billig bleiben.
- * Wofür: Für externe Prozessüberwachung, beispielsweise DBZS Feature Starter.
+ * Wofür: Für externe Prozessüberwachung, beispielsweise ein lokaler Prozessmonitor.
  * Woher: Aus dem lokalen HTTP-Transport, sobald der Listener gebunden ist.
  * Wo: Unter `/health`.
  * Soll-Ergebnis: Ein stets erfolgreiches, sofortiges Ergebnis ohne Netzwerklatenz.
@@ -78,7 +77,7 @@ export function buildHealthPayload(): { readonly service: string; readonly statu
  * Baut die Antwort des `/ready`-Endpunkts.
  *
  * Was: Meldet Version und aktuell registrierte Toolanzahl, weiterhin ohne Fremdsystem-Aufruf.
- * Warum: Externe Orchestrierung (z. B. Feature-Starter-Probes im 500ms-Takt) darf keine Gitea-Last durch Polling erzeugen;
+ * Warum: Externe Orchestrierung darf keine Gitea-Last durch Polling erzeugen;
  * der MCP-Server hat außerdem keine asynchrone Aufwärmphase, die eine echte Bereitschaftsprüfung rechtfertigen würde.
  * Wofür: Für externe Ready-Checks vor dem Beginn der eigentlichen Nutzung.
  * Woher: Aus dem lokalen HTTP-Transport nach vollständiger Toolregistrierung.

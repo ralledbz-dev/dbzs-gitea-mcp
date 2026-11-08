@@ -34,12 +34,8 @@ export interface ServerConfiguration {
   readonly webhookTargetUrl?: string;
   /** Optionale lokale Fleet-Commander-v1-API-Basisadresse. */
   readonly fleetApiUrl?: string;
-  /** Optionaler absoluter Pfad zur atomaren Feature-Starter-Health-Datei. */
-  readonly featureStarterHealthPath?: string;
-  /** Optionaler kanonischer Pfad zur DBZS.FeatureStarter.exe für bestehende CLI-Hooks. */
-  readonly featureStarterExecutable?: string;
-  /** Getrennte lokale Freigabe für mutierende Feature-Starter-Update- und Installer-Hooks. */
-  readonly featureStarterAllowHooks: boolean;
+  readonly workspaceRoot?: string;
+  readonly processAllowlist: readonly string[];
 }
 
 /**
@@ -162,23 +158,6 @@ function parseOptionalLocalWebhookTargetUrl(environment: NodeJS.ProcessEnv): str
 }
 
 /**
- * Liest einen strikt booleschen lokalen Freigabeschalter.
- *
- * Was: Akzeptiert nur den Stringwert `true` für eine aktive Freigabe und sonst false.
- * Warum: Mutierende Update- und Installer-Hooks müssen zusätzlich zur MCP-Bestätigung lokal aktiviert werden.
- * Wofür: Für DBZS_FEATURE_STARTER_ALLOW_HOOKS.
- * Woher: Aus dem gestarteten Prozess.
- * Wo: Bei der Runtime-Konfigurationsauflösung.
- * Soll-Ergebnis: Fail-closed bei jeder nicht exakten Aktivierung.
- *
- * @param environment Laufzeitumgebung für testbare Konfigurationsauflösung.
- * @returns Ob die mutierenden lokalen Hooks aktiviert sind.
- */
-function parseExplicitBoolean(environment: NodeJS.ProcessEnv, key: string): boolean {
-  return environment[key]?.trim().toLowerCase() === "true";
-}
-
-/**
  * Liest ein optionales HMAC-Secret für den ausschließlich lokalen Gitea-Webhook-Receiver.
  *
  * Was: Akzeptiert einen nicht leeren Secretwert erst ab 32 Zeichen und lässt den Receiver sonst deaktiviert.
@@ -262,8 +241,6 @@ export function loadServerConfiguration(environment: NodeJS.ProcessEnv = process
   const transport = parseTransportMode(environment);
   const webhookSecret = parseOptionalWebhookSecret(environment);
   const webhookTargetUrl = parseOptionalLocalWebhookTargetUrl(environment);
-  const featureStarterExecutable = environment.DBZS_FEATURE_STARTER_EXECUTABLE?.trim() || undefined;
-  const featureStarterAllowHooks = parseExplicitBoolean(environment, "DBZS_FEATURE_STARTER_ALLOW_HOOKS");
 
   if (Boolean(webhookSecret) !== Boolean(webhookTargetUrl)) {
     throw new DbzsError(
@@ -273,12 +250,6 @@ export function loadServerConfiguration(environment: NodeJS.ProcessEnv = process
   }
   if (webhookTargetUrl && transport !== "http") {
     throw new DbzsError("CONFIGURATION_ERROR", "Lokale Gitea-Webhooks erfordern MCP_TRANSPORT=http.");
-  }
-  if (featureStarterAllowHooks && !featureStarterExecutable) {
-    throw new DbzsError(
-      "CONFIGURATION_ERROR",
-      "DBZS_FEATURE_STARTER_ALLOW_HOOKS=true erfordert DBZS_FEATURE_STARTER_EXECUTABLE.",
-    );
   }
 
   return {
@@ -291,8 +262,7 @@ export function loadServerConfiguration(environment: NodeJS.ProcessEnv = process
     webhookSecret,
     webhookTargetUrl,
     fleetApiUrl: environment.DBZS_FLEET_API_URL?.trim() || undefined,
-    featureStarterHealthPath: environment.DBZS_FEATURE_STARTER_HEALTH_PATH?.trim() || undefined,
-    featureStarterExecutable,
-    featureStarterAllowHooks,
+    workspaceRoot: environment.DBZS_WORKSPACE_ROOT?.trim() || undefined,
+    processAllowlist: (environment.DBZS_PROCESS_ALLOWLIST || "git,node,npm,python,py,pwsh").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean),
   };
 }
