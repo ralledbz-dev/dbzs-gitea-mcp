@@ -8,8 +8,6 @@
 import { toDbzsError } from "../core/errors.js";
 import { DbzsEventBus, StderrLogger } from "../core/observability.js";
 import { GiteaClient } from "../gitea/client.js";
-import { FeatureStarterHealthReader } from "../integrations/feature-starter-health-reader.js";
-import { FeatureStarterHook } from "../integrations/feature-starter-hook.js";
 import { FleetCommanderClient } from "../integrations/fleet-commander-client.js";
 import { loadServerConfiguration } from "../security/config.js";
 import { LoopbackMcpHttpServer } from "../transports/http.js";
@@ -79,9 +77,6 @@ export async function startServer(): Promise<void> {
     webhookReceiverEnabled: Boolean(configuration.webhookSecret),
     localWebhookRegistrationEnabled: Boolean(configuration.webhookTargetUrl),
     fleetCommanderEnabled: Boolean(configuration.fleetApiUrl),
-    featureStarterHealthEnabled: Boolean(configuration.featureStarterHealthPath),
-    featureStarterHookEnabled: Boolean(configuration.featureStarterExecutable),
-    featureStarterMutationsEnabled: configuration.featureStarterAllowHooks,
   });
 
   const giteaClient = new GiteaClient(
@@ -101,18 +96,6 @@ export async function startServer(): Promise<void> {
   const phase3Services: Phase3Services = {
     ...(configuration.fleetApiUrl
       ? { fleetCommander: new FleetCommanderClient({ baseUrl: configuration.fleetApiUrl, eventBus }) }
-      : {}),
-    ...(configuration.featureStarterHealthPath
-      ? { featureStarterHealth: new FeatureStarterHealthReader({ healthPath: configuration.featureStarterHealthPath, eventBus }) }
-      : {}),
-    ...(configuration.featureStarterExecutable
-      ? {
-          featureStarterHook: new FeatureStarterHook({
-            executablePath: configuration.featureStarterExecutable,
-            allowHooks: configuration.featureStarterAllowHooks,
-            eventBus,
-          }),
-        }
       : {}),
     ...(localWebhook ? { localWebhook } : {}),
   };
