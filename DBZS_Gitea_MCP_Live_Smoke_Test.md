@@ -54,7 +54,7 @@ gitea_list_package_versions
 gitea_list_webhooks
 ```
 
-Das sind die 26 immer registrierten Tools. Optionale Phase-3-Tools (lokale Webhook-Erstellung/-Löschung, Fleet Commander, Feature Starter) erscheinen zusätzlich, sobald die jeweilige Integration per Environment Variable konfiguriert ist — siehe `DBZS Gitea MCP Server.md`.
+Das sind die 26 immer registrierten Tools. Optionale Phase-3-Tools (lokale Webhook-Erstellung/-Löschung und Fleet Commander) erscheinen zusätzlich, sobald die jeweilige Integration per Environment Variable konfiguriert ist — siehe `DBZS Gitea MCP Server.md`.
 
 ## 2a. Betriebsendpunkte prüfen (nur HTTP-Modus)
 
