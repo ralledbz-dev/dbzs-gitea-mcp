@@ -10,13 +10,10 @@ import { DbzsEventBus } from "../core/observability.js";
 import { SERVICE_NAME, SERVICE_VERSION } from "../health/probe.js";
 import { GiteaClient } from "../gitea/client.js";
 import { FleetCommanderClient } from "../integrations/fleet-commander-client.js";
-import { FeatureStarterHealthReader } from "../integrations/feature-starter-health-reader.js";
-import { FeatureStarterHook } from "../integrations/feature-starter-hook.js";
 import { LocalWebhookService } from "../webhooks/local-webhook-service.js";
 import { registerActionsTools } from "../tools/actions.js";
 import { registerArtifactAndReleaseTools } from "../tools/artifacts-releases.js";
 import { registerBranchAndCommitTools } from "../tools/branches-commits.js";
-import { registerFeatureStarterTools } from "../tools/feature-starter.js";
 import { registerFleetCommanderTools } from "../tools/fleet-commander.js";
 import { registerPackageTools } from "../tools/packages.js";
 import { registerPullRequestAndIssueTools } from "../tools/pull-requests-issues.js";
@@ -29,10 +26,6 @@ import { registerWebhookTools } from "../tools/webhooks.js";
 export interface Phase3Services {
   /** Bestehende lokale Fleet-Commander-Control-Plane; nur Read-Adapter. */
   readonly fleetCommander?: FleetCommanderClient;
-  /** Bestehende atomare Feature-Starter-Health-Sicht; nur Read-Adapter. */
-  readonly featureStarterHealth?: FeatureStarterHealthReader;
-  /** Bestehende Feature-Starter-CLI-Verträge für Update und Installer. */
-  readonly featureStarterHook?: FeatureStarterHook;
   /** Lokaler HMAC-Webhook-Registrierungsservice. */
   readonly localWebhook?: LocalWebhookService;
 }
@@ -43,7 +36,7 @@ export interface Phase3Services {
  *
  * Warum als Konstante und nicht nur aus den tatsächlichen `register*Tools`-Rückgabewerten abgeleitet:
  * `countConfiguredTools` muss ohne Serverkonstruktion aufrufbar sein, damit der `/ready`-Endpunkt bei
- * häufigem externem Polling (z. B. alle 500ms durch DBZS Feature Starter) keine 26+ Tools neu registriert.
+ * häufigem externem Polling keine 26+ Tools neu registriert.
  * Ein Test (`tests/protocol/http-transport.test.ts`) sichert ab, dass diese Konstante nicht von der
  * tatsächlichen Toolanzahl abweicht.
  */
@@ -62,12 +55,6 @@ export function countConfiguredTools(phase3Services: Phase3Services = {}): numbe
   }
   if (phase3Services.fleetCommander) {
     count += 5;
-  }
-  if (phase3Services.featureStarterHealth) {
-    count += 1;
-  }
-  if (phase3Services.featureStarterHook) {
-    count += 3;
   }
   return count;
 }
@@ -103,14 +90,11 @@ export function createMcpServer(
   toolCount += registerPackageTools(server, giteaClient, eventBus);
   toolCount += registerWebhookTools(server, giteaClient, eventBus, phase3Services.localWebhook);
   toolCount += registerFleetCommanderTools(server, eventBus, phase3Services.fleetCommander);
-  toolCount += registerFeatureStarterTools(server, eventBus, phase3Services.featureStarterHealth, phase3Services.featureStarterHook);
 
   eventBus.publish("mcp.server.tools_registered", "info", {
     toolCount,
     localWebhookEnabled: Boolean(phase3Services.localWebhook),
     fleetCommanderEnabled: Boolean(phase3Services.fleetCommander),
-    featureStarterHealthEnabled: Boolean(phase3Services.featureStarterHealth),
-    featureStarterHookEnabled: Boolean(phase3Services.featureStarterHook),
   });
 
   return server;
