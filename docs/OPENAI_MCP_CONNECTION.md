@@ -102,8 +102,7 @@ Die vollständige, praktische Tool-für-Tool-Testanleitung befindet sich in
 
 ## Warum kein Cloudflare/ngrok/öffentliches Forwarding
 
-Für DBZS bleibt die lokale Architektur `DBZS MCP 127.0.0.1:3939` + `OpenAI Secure MCP Tunnel` +
-`Feature Starter Lifecycle` die empfohlene Kombination: sie erhält die Local-First-Architektur und ermöglicht
+Für DBZS bleibt die lokale Architektur `DBZS MCP 127.0.0.1:3939` + `OpenAI Secure MCP Tunnel` die empfohlene Kombination: sie erhält die Local-First-Architektur und ermöglicht
 OpenAI-Zugriff, ohne den MCP-Server selbst öffentlich freizugeben.
 
 ## Quellen
