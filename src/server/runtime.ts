@@ -8,8 +8,7 @@
 import { toDbzsError } from "../core/errors.js";
 import { DbzsEventBus, StderrLogger } from "../core/observability.js";
 import { GiteaClient } from "../gitea/client.js";
-import { FeatureStarterHealthReader } from "../integrations/feature-starter-health-reader.js";
-import { FeatureStarterHook } from "../integrations/feature-starter-hook.js";
+import { LocalWorkspaceBridge } from "../local/workspace-bridge.js";
 import { FleetCommanderClient } from "../integrations/fleet-commander-client.js";
 import { loadServerConfiguration } from "../security/config.js";
 import { LoopbackMcpHttpServer } from "../transports/http.js";
@@ -24,7 +23,7 @@ import type { Phase3Services } from "./mcp-server.js";
  * @param httpServer Gestartete lokale HTTP-Runtime.
  * @param eventBus Zentraler DBZS-EventBus.
  */
-function registerHttpShutdown(httpServer: LoopbackMcpHttpServer, eventBus: DbzsEventBus): void {
+function registerHttpShutdown(httpServer: LoopbackMcpHttpServer, eventBus: DbzsEventBus, localWorkspace?: LocalWorkspaceBridge): void {
   let stopping = false;
 
   const shutdown = (signal: "SIGINT" | "SIGTERM") => {
@@ -34,8 +33,7 @@ function registerHttpShutdown(httpServer: LoopbackMcpHttpServer, eventBus: DbzsE
 
     stopping = true;
     eventBus.publish("runtime.shutdown.started", "info", { transport: "http", signal });
-    void httpServer
-      .stop()
+    void Promise.all([httpServer.stop(), localWorkspace?.shutdown()])
       .then(() => {
         eventBus.publish("runtime.shutdown.completed", "info", { transport: "http", signal });
       })
@@ -79,9 +77,7 @@ export async function startServer(): Promise<void> {
     webhookReceiverEnabled: Boolean(configuration.webhookSecret),
     localWebhookRegistrationEnabled: Boolean(configuration.webhookTargetUrl),
     fleetCommanderEnabled: Boolean(configuration.fleetApiUrl),
-    featureStarterHealthEnabled: Boolean(configuration.featureStarterHealthPath),
-    featureStarterHookEnabled: Boolean(configuration.featureStarterExecutable),
-    featureStarterMutationsEnabled: configuration.featureStarterAllowHooks,
+    localWorkspaceEnabled: Boolean(configuration.workspaceRoot),
   });
 
   const giteaClient = new GiteaClient(
@@ -98,26 +94,36 @@ export async function startServer(): Promise<void> {
         eventBus,
       })
     : undefined;
+  const localWorkspace = configuration.workspaceRoot ? new LocalWorkspaceBridge({ rootPath: configuration.workspaceRoot, processAllowlist: configuration.processAllowlist, eventBus }) : undefined;
+  await localWorkspace?.initialize();
   const phase3Services: Phase3Services = {
     ...(configuration.fleetApiUrl
       ? { fleetCommander: new FleetCommanderClient({ baseUrl: configuration.fleetApiUrl, eventBus }) }
       : {}),
-    ...(configuration.featureStarterHealthPath
-      ? { featureStarterHealth: new FeatureStarterHealthReader({ healthPath: configuration.featureStarterHealthPath, eventBus }) }
-      : {}),
-    ...(configuration.featureStarterExecutable
-      ? {
-          featureStarterHook: new FeatureStarterHook({
-            executablePath: configuration.featureStarterExecutable,
-            allowHooks: configuration.featureStarterAllowHooks,
-            eventBus,
-          }),
-        }
-      : {}),
     ...(localWebhook ? { localWebhook } : {}),
+    ...(localWorkspace ? { localWorkspace } : {}),
   };
 
   if (configuration.transport === "stdio") {
+    let stopping = false;
+    const shutdown = (signal: "SIGINT" | "SIGTERM") => {
+      if (stopping) return;
+      stopping = true;
+      eventBus.publish("runtime.shutdown.started", "info", { transport: "stdio", signal });
+      void (async () => {
+        try {
+          await localWorkspace?.shutdown();
+          eventBus.publish("runtime.shutdown.completed", "info", { transport: "stdio", signal });
+          process.exit(0);
+        } catch (error: unknown) {
+          const dbzsError = toDbzsError(error);
+          eventBus.publish("runtime.shutdown.failed", "error", { transport: "stdio", signal, errorCode: dbzsError.code, errorMessage: dbzsError.message });
+          process.exit(1);
+        }
+      })();
+    };
+    process.once("SIGINT", () => shutdown("SIGINT"));
+    process.once("SIGTERM", () => shutdown("SIGTERM"));
     await startStdioTransport(giteaClient, eventBus, phase3Services, configuration.allowedOwner);
     return;
   }
@@ -142,7 +148,7 @@ export async function startServer(): Promise<void> {
     port: configuration.httpPort,
   });
   await httpServer.start();
-  registerHttpShutdown(httpServer, eventBus);
+  registerHttpShutdown(httpServer, eventBus, localWorkspace);
   eventBus.publish("runtime.started", "info", {
     transport: "http",
     allowedOwner: configuration.allowedOwner,
