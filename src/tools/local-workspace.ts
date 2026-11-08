@@ -5,7 +5,7 @@ import { LocalWorkspaceBridge } from "../local/workspace-bridge.js";
 import { buildAnnotations, executeTool } from "./shared.js";
 export function registerLocalWorkspaceTools(server:McpServer,eventBus:DbzsEventBus,bridge?:LocalWorkspaceBridge):number{
  if(!bridge)return 0;
- const reg=(name:string,title:string,description:string,schema:z.ZodType,handler:(v:any)=>Promise<unknown>|unknown,write=false)=>server.registerTool(name,{title,description,inputSchema:schema,annotations:buildAnnotations(write)},async v=>executeTool(eventBus,name,()=>handler(v)));
+ const reg=(name:string,title:string,description:string,schema:z.ZodType,handler:(v:any)=>Promise<unknown>|unknown,write=false)=>server.registerTool(name,{title,description,inputSchema:schema,annotations:buildAnnotations(write)},async v=>executeTool(eventBus,name,()=>Promise.resolve(handler(v))));
  reg("workspace_list","Workspace-Dateien auflisten","Listet begrenzt Dateien im freigegebenen Workspace; Symlinks, .git und node_modules werden ausgelassen.",z.object({path:z.string().default("."),depth:z.number().int().min(0).max(5).default(2)}),v=>bridge.list(v.path,v.depth));
  reg("workspace_read_file","Workspace-Datei lesen","Liest UTF-8-Dateien bis 1 MB innerhalb des Roots.",z.object({path:z.string().min(1).max(4096)}),v=>bridge.read(v.path));
  reg("workspace_write_file","Workspace-Datei schreiben","Überschreibt eine Datei im Workspace; Zielordner muss existieren. confirm: true erforderlich.",z.object({path:z.string().min(1).max(4096),content:z.string().max(1000000),confirm:z.literal(true)}),v=>bridge.write(v.path,v.content),true);
