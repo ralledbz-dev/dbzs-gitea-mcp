@@ -79,7 +79,7 @@ export async function executeTool(eventBus: DbzsEventBus, toolName: string, oper
  * Wo: Bei jeder Toolregistrierung.
  * Soll-Ergebnis: `readOnlyHint`/`destructiveHint`/`idempotentHint` stimmen immer mit der tatsächlichen Semantik überein.
  *
- * @param isMutating Ob das Tool eine Gitea- oder Feature-Starter-Mutation auslöst.
+ * @param isMutating Ob das Tool eine Gitea- oder Fleet-Commander-Mutation auslöst.
  * @returns Vollständige MCP-Tool-Annotationen.
  */
 export function buildAnnotations(isMutating: boolean): {
