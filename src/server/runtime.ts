@@ -110,11 +110,17 @@ export async function startServer(): Promise<void> {
       if (stopping) return;
       stopping = true;
       eventBus.publish("runtime.shutdown.started", "info", { transport: "stdio", signal });
-      void localWorkspace?.shutdown().then(() => eventBus.publish("runtime.shutdown.completed", "info", { transport: "stdio", signal })).catch((error: unknown) => {
-        const dbzsError = toDbzsError(error);
-        eventBus.publish("runtime.shutdown.failed", "error", { transport: "stdio", signal, errorCode: dbzsError.code, errorMessage: dbzsError.message });
-        process.exitCode = 1;
-      });
+      void (async () => {
+        try {
+          await localWorkspace?.shutdown();
+          eventBus.publish("runtime.shutdown.completed", "info", { transport: "stdio", signal });
+          process.exit(0);
+        } catch (error: unknown) {
+          const dbzsError = toDbzsError(error);
+          eventBus.publish("runtime.shutdown.failed", "error", { transport: "stdio", signal, errorCode: dbzsError.code, errorMessage: dbzsError.message });
+          process.exit(1);
+        }
+      })();
     };
     process.once("SIGINT", () => shutdown("SIGINT"));
     process.once("SIGTERM", () => shutdown("SIGTERM"));
