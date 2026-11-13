@@ -1,22 +1,40 @@
-# Build a private portable plugin ZIP, excluding secrets and runtime sources.
+# Create a portable ZIP with forward-slash entry names (Windows PowerShell 5.1 compatible).
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$manifest = Join-Path $root 'plugin.json'
-$skill = Join-Path $root 'skills\dbzs-developer\SKILL.md'
-if (!(Test-Path $manifest) -or !(Test-Path $skill)) { throw 'Plugin manifest or skill missing.' }
-$null = Get-Content -Raw $manifest | ConvertFrom-Json
 $out = Join-Path (Split-Path -Parent $root) 'dbzs-developer-private.zip'
-if (Test-Path $out) { Remove-Item -LiteralPath $out -Force }
-$staging = Join-Path $env:TEMP ('dbzs-plugin-' + [guid]::NewGuid().ToString('N'))
-try {
-  New-Item -ItemType Directory -Force -Path (Join-Path $staging 'skills\dbzs-developer') | Out-Null
-  Copy-Item $manifest $staging
-  Copy-Item $skill (Join-Path $staging 'skills\dbzs-developer')
-  Copy-Item (Join-Path $root 'README.md') $staging
-  Copy-Item (Join-Path $root 'SECURITY.md') $staging
-  Copy-Item (Join-Path $root 'INSTALL_PRIVATE.md') $staging
-  Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $out
-  Write-Host "Created: $out"
-} finally {
-  if (Test-Path $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+$entries = @(
+  'plugin.json',
+  'skills/dbzs-developer/SKILL.md',
+  'README.md',
+  'SECURITY.md',
+  'INSTALL_PRIVATE.md'
+)
+$null = Get-Content -Raw (Join-Path $root 'plugin.json') | ConvertFrom-Json
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+foreach ($entry in $entries) {
+  if ($entry -match '\\.\\.' -or $entry.StartsWith('/') -or $entry.Contains('\\')) {
+    throw "Unsafe ZIP path: $entry"
+  }
+  $file = Join-Path $root ($entry.Replace('/', [IO.Path]::DirectorySeparatorChar))
+  if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing file: $entry" }
 }
+if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Force }
+$zip = [IO.Compression.ZipFile]::Open($out, [IO.Compression.ZipArchiveMode]::Create)
+try {
+  foreach ($entry in $entries) {
+    $file = Join-Path $root ($entry.Replace('/', [IO.Path]::DirectorySeparatorChar))
+    [IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+      $zip, $file, $entry, [IO.Compression.CompressionLevel]::Optimal
+    ) | Out-Null
+  }
+} finally { $zip.Dispose() }
+$verify = [IO.Compression.ZipFile]::OpenRead($out)
+try {
+  $names = @($verify.Entries | ForEach-Object { $_.FullName })
+  if (@($names | Where-Object { $_.Contains('\\') -or $_.StartsWith('/') -or $_ -match '(^|/)\\.\\.(/|$)' }).Count -gt 0) {
+    throw 'ZIP contains unsafe entry names.'
+  }
+  if (@($names).Count -ne $entries.Count) { throw 'Unexpected ZIP entry count.' }
+} finally { $verify.Dispose() }
+Write-Host "Created and verified: $out"
