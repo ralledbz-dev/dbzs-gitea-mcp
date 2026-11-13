@@ -10,6 +10,8 @@ $entries = @(
   'INSTALL_PRIVATE.md',
   'test-connection.ps1'
 )
+$icon = Join-Path $root 'assets\dbzs-developer-plugin-icon.png'
+if (Test-Path -LiteralPath $icon -PathType Leaf) { $entries += 'assets/dbzs-developer-plugin-icon.png' }
 $null = Get-Content -Raw (Join-Path $root 'plugin.json') | ConvertFrom-Json
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
