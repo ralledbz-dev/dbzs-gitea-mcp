@@ -7,7 +7,8 @@ $entries = @(
   'skills/dbzs-developer/SKILL.md',
   'README.md',
   'SECURITY.md',
-  'INSTALL_PRIVATE.md'
+  'INSTALL_PRIVATE.md',
+  'test-connection.ps1'
 )
 $null = Get-Content -Raw (Join-Path $root 'plugin.json') | ConvertFrom-Json
 Add-Type -AssemblyName System.IO.Compression
