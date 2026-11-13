@@ -1,0 +1,32 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "dbzs-developer",
+  "version": "0.1.0",
+  "description": "Private DBZS Gitea developer workflows with controlled MCP integration.",
+  "repository": "https://github.com/ralledbz-dev/dbzs-gitea-mcp",
+  "keywords": [
+    "gitea",
+    "mcp",
+    "developer",
+    "private"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "DBZS Developer",
+        "shortDescription": "Private Gitea development workflows",
+        "longDescription": "Inspect repositories and perform approved development operations through the owner's private DBZS MCP service.",
+        "developerName": "DivisionByZeros",
+        "category": "Developer Tools",
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
+        "defaultPrompt": [
+          "Inspect my DBZS Gitea repositories and summarize their status.",
+          "Review the selected repository without changing files."
+        ]
+      }
+    }
+  }
+}
